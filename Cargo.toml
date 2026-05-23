@@ -1,11 +1,19 @@
-[package]
-name = "fraypad"
+[workspace]
+resolver = "3"
+members = [
+  "crates/server_evdev",
+  "crates/fraypad_protocol",
+  "crates/client_gdext",
+]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "High-performance virtual control software for Linux."
 repository = "https://github.com/fraypad-hq/fraypad"
 homepage = "https://github.com/fraypad-hq/fraypad"
-readme = "README.md"
 
-[dependencies]
+[workspace.dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+anyhow = "1.0"
+fraypad_protocol = { path = "crates/fraypad_protocol", version = "0.2.0" }

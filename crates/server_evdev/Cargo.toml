@@ -1,0 +1,15 @@
+[package]
+name = "fraypad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "High-performance virtual control software for Linux."
+readme = "README.md"
+
+[dependencies]
+evdev = "0.13"
+fraypad_protocol = { workspace = true }
+bytemuck = { workspace = true }
+anyhow = { workspace = true }

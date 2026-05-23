@@ -1,0 +1,11 @@
+[package]
+name = "fraypad_protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Defines the protocol for Fraypad packets"
+
+[dependencies]
+bytemuck = { workspace = true }
