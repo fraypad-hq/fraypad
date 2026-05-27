@@ -227,7 +227,7 @@ fn main() -> Result<()> {
     let mut device = build_gamepad(player_index)?;
     println!("Gamepad {} created!", player_index + 1);
 
-    let _mouseboard = build_mouseboard()?;
+    let mut mouseboard = build_mouseboard()?;
     println!("Mouseboard created!");
 
     let socket = UdpSocket::bind("0.0.0.0:54321").context("Failed to bind UDP socket.")?;
@@ -237,6 +237,7 @@ fn main() -> Result<()> {
     let buf = bytemuck::bytes_of_mut(&mut aligned_buf);
 
     let mut last_seq_id: [u16; 4] = [0; 4];
+    let mut last_kbm_seq_id: u16 = 0;
 
     loop {
         let (len, _src_addr) = socket.recv_from(buf).context("UDP read error")?;
@@ -245,18 +246,25 @@ fn main() -> Result<()> {
             12 => {
                 let packet: &InputPacket = bytemuck::from_bytes(&buf[..12]);
 
-                let diff = packet.seq_id.wrapping_sub(last_seq_id[player_index]);
+                let routing_bit = packet.packet_type >> 15;
+                let event_type = packet.packet_type & 0x7FFF;
+
+                let (seq, target) = if routing_bit == 0 {
+                    (&mut last_seq_id[player_index], &mut device)
+                } else {
+                    (&mut last_kbm_seq_id, &mut mouseboard)
+                };
+
+                let diff = packet.seq_id.wrapping_sub(*seq);
                 if diff == 0 || diff >= 32768 {
                     continue;
                 }
-                last_seq_id[player_index] = packet.seq_id;
+                *seq = packet.seq_id;
 
-                let event_type = packet.packet_type & 0x7FFF;
                 let event = InputEvent::new(event_type, packet.code, packet.value);
-
                 let sync_event = InputEvent::new(0, 0, 0);
 
-                if let Err(e) = device.emit(&[event, sync_event]) {
+                if let Err(e) = target.emit(&[event, sync_event]) {
                     eprintln!("Failed to emit event: {}", e);
                 }
             }
