@@ -43,8 +43,7 @@ pub struct FeedbackPacket {
     /// The feedback event type
     ///
     /// Signaling (bidirectional):
-    /// * `0`: Connect - request (client to server) or ack with assigned slot
-    ///        (server to client)
+    /// * `0`: Connect - request (client to server) or ack with assigned slot (server to client)
     /// * `1`: Disconnect (client to server)
     /// * `2`: Rejected - all player slots are full (server to client)
     ///
