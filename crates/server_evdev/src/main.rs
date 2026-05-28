@@ -218,17 +218,20 @@ fn build_mouseboard() -> Result<VirtualDevice> {
 }
 
 fn main() -> Result<()> {
-    let player_index = 0;
-    println!(
-        "Welcome to Fraypad server! Starting up gamepad {}...",
-        player_index + 1
-    );
+    use std::net::SocketAddr;
 
-    let mut device = build_gamepad(player_index)?;
-    println!("Gamepad {} created!", player_index + 1);
+    println!("Welcome to Fraypad server! Building virtual devices...");
+
+    let mut gamepads: [VirtualDevice; 4] = [
+        build_gamepad(0).context("Failed to build gamepad 1")?,
+        build_gamepad(1).context("Failed to build gamepad 2")?,
+        build_gamepad(2).context("Failed to build gamepad 3")?,
+        build_gamepad(3).context("Failed to build gamepad 4")?,
+    ];
+    println!("Gamepads 1-4 created.");
 
     let mut mouseboard = build_mouseboard()?;
-    println!("Mouseboard created!");
+    println!("Mouseboard created.");
 
     let socket = UdpSocket::bind("0.0.0.0:54321").context("Failed to bind UDP socket.")?;
     println!("Server listening on port 54321");
@@ -236,23 +239,28 @@ fn main() -> Result<()> {
     let mut aligned_buf = [0u32; 3];
     let buf = bytemuck::bytes_of_mut(&mut aligned_buf);
 
-    let mut last_seq_id: [u16; 4] = [0; 4];
-    let mut last_kbm_seq_id: u16 = 0;
+    let mut clients: [Option<SocketAddr>; 4] = [None; 4];
+    let mut last_seq_ids: [u16; 4] = [0; 4];
+    let mut last_kbm_seq_ids: [u16; 4] = [0; 4];
 
     loop {
-        let (len, _src_addr) = socket.recv_from(buf).context("UDP read error")?;
+        let (len, src_addr) = socket.recv_from(buf).context("UDP read error")?;
 
         match len {
             12 => {
                 let packet: &InputPacket = bytemuck::from_bytes(&buf[..12]);
+                if packet.player_id >= 4 {
+                    continue;
+                }
+                let player_index = packet.player_id as usize;
 
                 let routing_bit = packet.packet_type >> 15;
                 let event_type = packet.packet_type & 0x7FFF;
 
                 let (seq, target) = if routing_bit == 0 {
-                    (&mut last_seq_id[player_index], &mut device)
+                    (&mut last_seq_ids[player_index], &mut gamepads[player_index])
                 } else {
-                    (&mut last_kbm_seq_id, &mut mouseboard)
+                    (&mut last_kbm_seq_ids[player_index], &mut mouseboard)
                 };
 
                 let diff = packet.seq_id.wrapping_sub(*seq);
@@ -272,7 +280,64 @@ fn main() -> Result<()> {
             8 => {
                 let packet: &FeedbackPacket = bytemuck::from_bytes(&buf[..8]);
 
-                println!("Received feedback packet: {:#?}", packet);
+                match packet.packet_type {
+                    // Connect request
+                    0 => {
+                        // Re-ack if already connected
+                        if let Some(slot) = clients.iter().position(|c| *c == Some(src_addr)) {
+                            let ack = FeedbackPacket {
+                                packet_type: 0,
+                                player_id: slot as u16,
+                                primary: 0,
+                                second: 0,
+                            };
+                            let _ = socket.send_to(bytemuck::bytes_of(&ack), src_addr);
+                            continue;
+                        }
+
+                        // Assign a free slot
+                        if let Some(slot) = clients.iter().position(|c| c.is_none()) {
+                            clients[slot] = Some(src_addr);
+                            println!("Player {} connected: {}", slot + 1, src_addr);
+
+                            let ack = FeedbackPacket {
+                                packet_type: 0,
+                                player_id: slot as u16,
+                                primary: 0,
+                                second: 0,
+                            };
+                            let _ = socket.send_to(bytemuck::bytes_of(&ack), src_addr);
+                        } else {
+                            // All slots full - reject
+                            let reject = FeedbackPacket {
+                                packet_type: 2,
+                                player_id: 0,
+                                primary: 0,
+                                second: 0,
+                            };
+                            let _ = socket.send_to(bytemuck::bytes_of(&reject), src_addr);
+                            println!("Rejected connection from {} - all slots full.", src_addr);
+                        }
+                    }
+
+                    // Disconnect
+                    1 => {
+                        if let Some(slot) = clients.iter().position(|c| *c == Some(src_addr)) {
+                            clients[slot] = None;
+                            last_seq_ids[slot] = 0;
+                            last_kbm_seq_ids[slot] = 0;
+                            // TODO: consider a heartbeat packet for timeout-based eviction
+                            println!("Player {} disconnected: {}", slot + 1, src_addr);
+                        }
+                    }
+
+                    // Rumble (server to client only - log if received from client)
+                    3 => {
+                        println!("Received rumble packet from {}: {:#?}", src_addr, packet);
+                    }
+
+                    _ => {}
+                }
             }
 
             _ => continue,

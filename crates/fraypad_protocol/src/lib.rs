@@ -35,28 +35,35 @@ pub struct InputPacket {
     pub value: i32,
 }
 
-/// A struct for a single feedback payload for intercommuncation
+/// A struct for a single feedback payload for intercommunication
 /// between the client and the server
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct FeedbackPacket {
     /// The feedback event type
     ///
-    /// * `0`: Rumble/Vibration
+    /// Signaling (bidirectional):
+    /// * `0`: Connect - request (client to server) or ack with assigned slot
+    ///        (server to client)
+    /// * `1`: Disconnect (client to server)
+    /// * `2`: Rejected - all player slots are full (server to client)
+    ///
+    /// Data (server to client):
+    /// * `3`: Rumble/Vibration
     pub packet_type: u16,
 
-    /// The target controller slot, supporting values from
+    /// The target or assigned player slot, supporting values from
     /// `0` to `3`
     pub player_id: u16,
 
     /// The primary payload data
     ///
-    /// For Rumble (`type = 0`), this is the motor magnitude
+    /// For Rumble (`type = 3`), this is the motor magnitude
     /// (0 to 65535).
     pub primary: u16,
 
     /// The secondary payload data
     ///
-    /// For Rumble (`type = 0`), this is the duration in ms.
+    /// For Rumble (`type = 3`), this is the duration in ms.
     pub second: u16,
 }
