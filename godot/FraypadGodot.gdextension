@@ -1,0 +1,16 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.3
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 =     "res://../target/debug/libclient_gdext.so"
+linux.release.x86_64 =   "res://../target/release/libclient_gdext.so"
+windows.debug.x86_64 =   "res://../target/debug/client_gdext.dll"
+windows.release.x86_64 = "res://../target/release/client_gdext.dll"
+macos.debug =            "res://../target/debug/libclient_gdext.dylib"
+macos.release =          "res://../target/release/libclient_gdext.dylib"
+macos.debug.arm64 =      "res://../target/debug/libclient_gdext.dylib"
+macos.release.arm64 =    "res://../target/release/libclient_gdext.dylib"
+android.debug.arm64 =    "res://../target/aarch64-linux-android/release/libclient_gdext.so"
+android.release.arm64 =  "res://../target/aarch64-linux-android/release/libclient_gdext.so"
