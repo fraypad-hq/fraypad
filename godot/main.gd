@@ -60,6 +60,13 @@ func _ready() -> void:
 ## lopsided rectangles. Instead every control is sized off the canvas *height*
 ## (so round/square things stay round/square at any aspect) and positioned in
 ## px offsets, with the two thumb clusters pinned to the left and right edges.
+##
+## Both clusters are laid out as a four-corner **diamond** (A bottom, B right,
+## X left, Y top) rather than a plus/cross. Arms that touch edge-to-edge read
+## as one blob and make it ambiguous which button a thumb is on; separating the
+## four corners makes each one its own target. The face buttons are deliberately
+## larger than the d-pad: they are the most-tapped controls on the pad, while
+## the d-pad is usually nudged rather than mashed.
 func _layout_pad() -> void:
 	var w: float = %PadFit.size.x
 	var h: float = %PadFit.size.y
@@ -85,41 +92,70 @@ func _layout_pad() -> void:
 	_place(%Back, w * 0.5 - menu_w * 0.5 - gap - menu_w, margin, menu_w, menu_h)
 	_place(%Start, w * 0.5 + menu_w * 0.5 + gap, margin, menu_w, menu_h)
 
-	# ── Thumb clusters: square so the sticks stay circular ───────────
+	# ── Thumb clusters ───────────────────────────────────────────────
 	# Vertical budget, in fractions of the height:
-	#   bumpers 0..0.17 | cross 0.26..0.62 | thumbstick 0.64..0.98
-	var btn: float = h * 0.115          # one d-pad arm / one face button
-	var cluster_x: float = h * 0.40     # distance from the side edge to the cross centre
-	var cluster_y: float = h * 0.44     # vertical centre of the cross / diamond
-	var stick: float = h * 0.34         # thumbstick touch area (square)
+	#   bumpers 0..0.17 | left stick 0.20..0.58 | d-pad 0.66..0.95
+	#                   | face diamond 0.21..0.67 | right stick 0.70..0.98
+	#
+	# The two sides are not mirror images. On the left the **stick** sits high,
+	# where the d-pad used to be, and the d-pad drops below it: the left thumb
+	# lives on the stick, so it gets the easier, higher position. The d-pad is a
+	# deliberate reach and is used less, so it goes where the thumb falls
+	# naturally onto it. The right side keeps the stick down in the corner
+	# under the face diamond, which is the usual layout.
+	#
+	# The face diamond gets a bigger button than the d-pad, so the whole right
+	# cluster is scaled up. `dspan`/`fspan` are the distance from the cluster
+	# centre to a button's centre along each axis; the corner buttons are offset
+	# by that on both axes, which is what puts them on the diagonals and leaves
+	# the centre empty.
+	var face: float = h * 0.145       # one face button (large, easy to hit)
+	var dpad: float = h * 0.10        # one d-pad button
+	var cluster_y: float = h * 0.44   # vertical centre of the face diamond
+	var right_cx: float = w - h * 0.46
+	var left_cx: float = h * 0.46     # vertical axis both left controls share
+	var stick: float = h * 0.38       # thumbstick touch area (square, left)
+	var rstick: float = h * 0.30      # right thumbstick touch area (square)
 
-	# D-pad cross on the left.
-	var dcx: float = cluster_x
-	var dcy: float = cluster_y
-	_place(%DUp, dcx - btn * 0.5, dcy - btn * 1.5, btn, btn)
-	_place(%DLeft, dcx - btn * 1.5, dcy - btn * 0.5, btn, btn)
-	_place(%DDown, dcx - btn * 0.5, dcy - btn * 0.5, btn, btn)
-	_place(%DRight, dcx + btn * 0.5, dcy - btn * 0.5, btn, btn)
+	# Left stick: high, where the d-pad used to be, and large.
+	var ls_y: float = h * 0.39 - stick * 0.5
+	_place(%LeftStick, left_cx - stick * 0.5, ls_y, stick, stick)
+
+	# D-pad diamond, below the stick on the same vertical axis.
+	#   Buttons sit on the diagonals, each offset from the cluster centre by
+	#   `dspan` on both axes. `dspan` must be at least the button size, or
+	#   diagonally adjacent buttons share a corner square; the extra 5% opens a
+	#   clean gap so it is obvious which corner a thumb is on.
+	var dspan: float = dpad * 1.05
+	var dcx: float = left_cx
+	var dcy: float = h * 0.79
+	_place(%DUp, dcx - dpad * 0.5, dcy - dspan - dpad * 0.5, dpad, dpad)
+	_place(%DDown, dcx - dpad * 0.5, dcy + dspan - dpad * 0.5, dpad, dpad)
+	_place(%DLeft, dcx - dspan - dpad * 0.5, dcy - dpad * 0.5, dpad, dpad)
+	_place(%DRight, dcx + dspan - dpad * 0.5, dcy - dpad * 0.5, dpad, dpad)
 
 	# Face diamond on the right.
-	var fcx: float = w - cluster_x
-	var fcy: float = cluster_y
-	_place(%BtnY, fcx - btn * 0.5, fcy - btn * 1.5, btn, btn)
-	_place(%BtnX, fcx - btn * 1.5, fcy - btn * 0.5, btn, btn)
-	_place(%BtnA, fcx - btn * 0.5, fcy - btn * 0.5, btn, btn)
-	_place(%BtnB, fcx + btn * 0.5, fcy - btn * 0.5, btn, btn)
+	var fspan: float = face * 1.05
+	_place(%BtnY, right_cx - face * 0.5, cluster_y - fspan - face * 0.5, face, face)
+	_place(%BtnA, right_cx - face * 0.5, cluster_y + fspan - face * 0.5, face, face)
+	_place(%BtnX, right_cx - fspan - face * 0.5, cluster_y - face * 0.5, face, face)
+	_place(%BtnB, right_cx + fspan - face * 0.5, cluster_y - face * 0.5, face, face)
 
-	# Sticks in the bottom corners, below the crosses.
-	_place(%LeftStick, margin, h - margin - stick, stick, stick)
-	_place(%RightStick, w - margin - stick, h - margin - stick, stick, stick)
+	# Right stick in the bottom corner, below the face diamond. Its top edge
+	# clears the diamond's bottom button so a thumb reaching for the stick never
+	# clips the button above it.
+	_place(%RightStick, w - margin - rstick, h - margin - rstick, rstick, rstick)
 
 	# Scale label text with the pad so it stays readable on a big phone and
-	# doesn't overflow the button on a small one.
+	# doesn't overflow the button on a small one. The face buttons get a
+	# proportionally larger glyph now that they are bigger targets.
 	for ctrl in [%LT, %LB, %RB, %RT, %Back, %Xbox, %Start,
-			%DUp, %DLeft, %DDown, %DRight,
-			%BtnA, %BtnB, %BtnX, %BtnY]:
+			%DUp, %DLeft, %DDown, %DRight]:
 		var fs: int = maxi(12, int(h * 0.055))
 		ctrl.add_theme_font_size_override("font_size", fs)
+	for ctrl in [%BtnA, %BtnB, %BtnX, %BtnY]:
+		var ffs: int = maxi(14, int(h * 0.075))
+		ctrl.add_theme_font_size_override("font_size", ffs)
 
 
 ## Park a control at an absolute pixel rect. Anchors are pinned to the top-left
