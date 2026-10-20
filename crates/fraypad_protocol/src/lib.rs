@@ -315,7 +315,11 @@ impl Packet {
     #[must_use]
     pub fn rumble_params(self) -> Option<(u16, u16, u32)> {
         if self.kind() == Some(PacketKind::Rumble) {
-            Some((self.code, self.event_type, self.value.max(0).cast_unsigned()))
+            Some((
+                self.code,
+                self.event_type,
+                self.value.max(0).cast_unsigned(),
+            ))
         } else {
             None
         }
@@ -329,7 +333,9 @@ impl Packet {
     /// which a test pins to `PACKET_SIZE`.
     #[must_use]
     pub fn to_bytes(self) -> [u8; PACKET_SIZE] {
-        bytemuck::bytes_of(&self).try_into().expect("Packet is PACKET_SIZE bytes")
+        bytemuck::bytes_of(&self)
+            .try_into()
+            .expect("Packet is PACKET_SIZE bytes")
     }
 
     /// Parse from the 16-byte wire representation.

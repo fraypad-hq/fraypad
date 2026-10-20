@@ -1,1 +1,8 @@
 /target
+
+# Editor / OS noise
+.vscode/
+.idea/
+.direnv/
+*.swp
+.DS_Store

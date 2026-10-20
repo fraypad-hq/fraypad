@@ -2,5 +2,5 @@
 # Exported build artifacts (APKs). export_presets.cfg is a source file and
 # must stay tracked.
 export/
-build*
+build/
 *.idsig

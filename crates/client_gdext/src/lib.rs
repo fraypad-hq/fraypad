@@ -200,13 +200,21 @@ impl FraypadClient {
     /// Press or release a keyboard key by evdev keycode.
     #[func]
     pub fn send_key(&mut self, key_code: u16, pressed: bool) {
-        self.send_input(codes::EV_KEY | codes::ROUTE_KBM, key_code, i32::from(pressed));
+        self.send_input(
+            codes::EV_KEY | codes::ROUTE_KBM,
+            key_code,
+            i32::from(pressed),
+        );
     }
 
     /// Press or release a mouse button.
     #[func]
     pub fn send_mouse_button(&mut self, btn_code: u16, pressed: bool) {
-        self.send_input(codes::EV_KEY | codes::ROUTE_KBM, btn_code, i32::from(pressed));
+        self.send_input(
+            codes::EV_KEY | codes::ROUTE_KBM,
+            btn_code,
+            i32::from(pressed),
+        );
     }
 
     /// Press or release a gamepad face/shoulder/menu button.
@@ -286,7 +294,11 @@ impl FraypadClient {
     #[func]
     pub fn send_scroll(&mut self, vertical: i32, horizontal: i32) {
         self.send_input(codes::EV_REL | codes::ROUTE_KBM, codes::REL_WHEEL, vertical);
-        self.send_input(codes::EV_REL | codes::ROUTE_KBM, codes::REL_HWHEEL, horizontal);
+        self.send_input(
+            codes::EV_REL | codes::ROUTE_KBM,
+            codes::REL_HWHEEL,
+            horizontal,
+        );
     }
 
     // ── Connection state machine ─────────────────────────────────────────
@@ -327,7 +339,8 @@ impl FraypadClient {
                         godot_error!("Fraypad: server rejected us (reason {reason})");
                     }
                     self.reset_connection();
-                    self.base_mut().emit_signal("rejected", &[reason.to_variant()]);
+                    self.base_mut()
+                        .emit_signal("rejected", &[reason.to_variant()]);
                     return;
                 }
                 _ => {} // Ignore stray packets while connecting.
@@ -376,7 +389,10 @@ impl FraypadClient {
         }
 
         // Keep-alive and periodic self-healing snapshot.
-        if self.last_heartbeat.is_some_and(|t| t.elapsed() >= HEARTBEAT_INTERVAL) {
+        if self
+            .last_heartbeat
+            .is_some_and(|t| t.elapsed() >= HEARTBEAT_INTERVAL)
+        {
             self.last_heartbeat = Some(Instant::now());
             let mut hb = Packet::new(PacketKind::Heartbeat);
             // A monotonic microsecond stamp, truncated to fit the i32 field;

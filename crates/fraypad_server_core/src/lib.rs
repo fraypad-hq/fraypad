@@ -150,7 +150,10 @@ impl SessionTable {
             return Some(slot);
         }
         let slot = self.slots.iter().position(Option::is_none)?;
-        self.slots[slot] = Some(Session { last_seen: now, last_seq: [0; 2] });
+        self.slots[slot] = Some(Session {
+            last_seen: now,
+            last_seq: [0; 2],
+        });
         self.addrs[slot] = Some(addr);
         Some(slot)
     }
@@ -265,12 +268,7 @@ impl<B: Backend> ServerCore<B> {
     ///
     /// Unknown or malformed datagrams, and datagrams from unassigned clients,
     /// are silently ignored (returning no replies).
-    pub fn handle_datagram(
-        &mut self,
-        bytes: &[u8],
-        from: SocketAddr,
-        now: Instant,
-    ) -> Vec<Reply> {
+    pub fn handle_datagram(&mut self, bytes: &[u8], from: SocketAddr, now: Instant) -> Vec<Reply> {
         let Some(packet) = Packet::from_bytes(bytes) else {
             return Vec::new();
         };
@@ -300,15 +298,24 @@ impl<B: Backend> ServerCore<B> {
                 ..Packet::new(PacketKind::Resync)
             };
             vec![
-                Reply { to: from, packet: welcome },
-                Reply { to: from, packet: resync },
+                Reply {
+                    to: from,
+                    packet: welcome,
+                },
+                Reply {
+                    to: from,
+                    packet: resync,
+                },
             ]
         } else {
             let reject = Packet {
                 value: RejectReason::ServerFull as i32,
                 ..Packet::new(PacketKind::Reject)
             };
-            vec![Reply { to: from, packet: reject }]
+            vec![Reply {
+                to: from,
+                packet: reject,
+            }]
         }
     }
 
@@ -320,12 +327,7 @@ impl<B: Backend> ServerCore<B> {
         Vec::new()
     }
 
-    fn on_heartbeat(
-        &mut self,
-        packet: Packet,
-        from: SocketAddr,
-        now: Instant,
-    ) -> Vec<Reply> {
+    fn on_heartbeat(&mut self, packet: Packet, from: SocketAddr, now: Instant) -> Vec<Reply> {
         // A heartbeat only counts as liveness from an assigned client.
         if !self.sessions.touch(from, now) {
             return Vec::new();
@@ -335,15 +337,13 @@ impl<B: Backend> ServerCore<B> {
             value: packet.value,
             ..Packet::new(PacketKind::Pong)
         };
-        vec![Reply { to: from, packet: pong }]
+        vec![Reply {
+            to: from,
+            packet: pong,
+        }]
     }
 
-    fn on_input(
-        &mut self,
-        packet: Packet,
-        from: SocketAddr,
-        now: Instant,
-    ) -> Vec<Reply> {
+    fn on_input(&mut self, packet: Packet, from: SocketAddr, now: Instant) -> Vec<Reply> {
         // Resolve the slot from the source address, never the packet, so a
         // client cannot inject into another player's pad.
         let Some(slot) = self.sessions.slot_of(from) else {
@@ -352,7 +352,10 @@ impl<B: Backend> ServerCore<B> {
         self.sessions.touch(from, now);
 
         let kbm = codes::is_kbm(packet.event_type);
-        if !self.sessions.check_seq(slot, usize::from(kbm), packet.seq_id) {
+        if !self
+            .sessions
+            .check_seq(slot, usize::from(kbm), packet.seq_id)
+        {
             return Vec::new();
         }
 
@@ -390,7 +393,12 @@ impl<B: Backend> ServerCore<B> {
                 let player_id = u16::try_from(slot).unwrap_or(u16::MAX);
                 replies.push(Reply {
                     to: addr,
-                    packet: Packet::rumble(player_id, rumble.strong, rumble.weak, rumble.duration_ms),
+                    packet: Packet::rumble(
+                        player_id,
+                        rumble.strong,
+                        rumble.weak,
+                        rumble.duration_ms,
+                    ),
                 });
             }
         }
@@ -456,7 +464,12 @@ mod tests {
         Packet::new(PacketKind::Hello).to_bytes()
     }
 
-    fn input(seq: u16, event_type: u16, code: u16, value: i32) -> [u8; fraypad_protocol::PACKET_SIZE] {
+    fn input(
+        seq: u16,
+        event_type: u16,
+        code: u16,
+        value: i32,
+    ) -> [u8; fraypad_protocol::PACKET_SIZE] {
         Packet::input(0, seq, event_type, code, value).to_bytes()
     }
 
@@ -487,7 +500,10 @@ mod tests {
         let (mut core, now) = start();
         let replies = core.handle_datagram(&hello(), addr(1), now);
         let kinds: Vec<_> = replies.iter().map(|r| r.packet.kind()).collect();
-        assert_eq!(kinds, vec![Some(PacketKind::Welcome), Some(PacketKind::Resync)]);
+        assert_eq!(
+            kinds,
+            vec![Some(PacketKind::Welcome), Some(PacketKind::Resync)]
+        );
     }
 
     #[test]
@@ -499,17 +515,15 @@ mod tests {
         let replies = core.handle_datagram(&hello(), addr(99), now);
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].packet.kind(), Some(PacketKind::Reject));
-        assert_eq!(
-            replies[0].packet.value,
-            RejectReason::ServerFull as i32
-        );
+        assert_eq!(replies[0].packet.value, RejectReason::ServerFull as i32);
     }
 
     #[test]
     fn input_from_unknown_addr_is_ignored() {
         let (mut core, now) = start();
         // Never connected.
-        let replies = core.handle_datagram(&input(1, codes::EV_KEY, codes::BTN_SOUTH, 1), addr(1), now);
+        let replies =
+            core.handle_datagram(&input(1, codes::EV_KEY, codes::BTN_SOUTH, 1), addr(1), now);
         assert!(replies.is_empty());
         assert!(core.backend.calls.is_empty());
     }
@@ -524,7 +538,11 @@ mod tests {
             core.backend.calls,
             vec![Call::Emit(
                 Target::Gamepad(0),
-                InputEvent { event_type: codes::EV_KEY, code: codes::BTN_SOUTH, value: 1 }
+                InputEvent {
+                    event_type: codes::EV_KEY,
+                    code: codes::BTN_SOUTH,
+                    value: 1
+                }
             )]
         );
     }
@@ -543,7 +561,11 @@ mod tests {
             core.backend.calls,
             vec![Call::Emit(
                 Target::Gamepad(1),
-                InputEvent { event_type: codes::EV_KEY, code: codes::BTN_SOUTH, value: 1 }
+                InputEvent {
+                    event_type: codes::EV_KEY,
+                    code: codes::BTN_SOUTH,
+                    value: 1
+                }
             )]
         );
     }
@@ -569,10 +591,17 @@ mod tests {
         // Same seq, other route: accepted.
         core.handle_datagram(&input(5, kbm, codes::BTN_LEFT, 1), addr(1), now);
         assert_eq!(core.backend.calls.len(), 2);
-        assert_eq!(core.backend.calls[1], Call::Emit(
-            Target::KeyboardMouse,
-            InputEvent { event_type: codes::EV_KEY, code: codes::BTN_LEFT, value: 1 }
-        ));
+        assert_eq!(
+            core.backend.calls[1],
+            Call::Emit(
+                Target::KeyboardMouse,
+                InputEvent {
+                    event_type: codes::EV_KEY,
+                    code: codes::BTN_LEFT,
+                    value: 1
+                }
+            )
+        );
     }
 
     #[test]
@@ -591,7 +620,10 @@ mod tests {
     fn heartbeat_from_unknown_addr_is_ignored() {
         let (mut core, now) = start();
         let hb = Packet::new(PacketKind::Heartbeat);
-        assert!(core.handle_datagram(&hb.to_bytes(), addr(1), now).is_empty());
+        assert!(
+            core.handle_datagram(&hb.to_bytes(), addr(1), now)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -644,7 +676,10 @@ mod tests {
             core.handle_datagram(&hb.to_bytes(), addr(1), t);
             core.backend.calls.clear();
             core.housekeep(t);
-            assert!(!core.backend.calls.contains(&Call::DestroyPad(0)), "evicted at step {i}");
+            assert!(
+                !core.backend.calls.contains(&Call::DestroyPad(0)),
+                "evicted at step {i}"
+            );
         }
     }
 
@@ -653,7 +688,10 @@ mod tests {
         let (mut core, now) = start();
         connect(&mut core, addr(1), now);
         core.backend.calls.clear();
-        assert!(core.handle_datagram(b"not a packet", addr(1), now).is_empty());
+        assert!(
+            core.handle_datagram(b"not a packet", addr(1), now)
+                .is_empty()
+        );
         assert!(core.backend.calls.is_empty());
     }
 

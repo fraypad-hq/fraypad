@@ -22,7 +22,9 @@ use nix::fcntl::{F_SETFL, OFlag, fcntl};
 
 use anyhow::{Context, Result};
 use fraypad_protocol::codes;
-use fraypad_server_core::{Backend, Config, InputEvent as CoreEvent, Rumble, Reply, ServerCore, Target};
+use fraypad_server_core::{
+    Backend, Config, InputEvent as CoreEvent, Reply, Rumble, ServerCore, Target,
+};
 
 /// How long the socket blocks waiting for a datagram before the main loop
 /// wakes up to run housekeeping.
@@ -320,7 +322,9 @@ impl EvdevBackend {
     fn drain_ff(&mut self) {
         let Self { pads, ff, .. } = self;
         for slot in 0..fraypad_server_core::MAX_PLAYERS {
-            let Some(device) = pads[slot].as_mut() else { continue };
+            let Some(device) = pads[slot].as_mut() else {
+                continue;
+            };
             let table = &mut ff[slot];
 
             // Collect first: the fetch_events iterator borrows the device,
@@ -457,8 +461,7 @@ impl FraypadServer {
         let backend = EvdevBackend::new()?;
         let core = ServerCore::new(backend, Config::default());
 
-        let socket =
-            UdpSocket::bind("0.0.0.0:54321").context("Failed to bind UDP socket.")?;
+        let socket = UdpSocket::bind("0.0.0.0:54321").context("Failed to bind UDP socket.")?;
         socket
             .set_read_timeout(Some(RECV_TIMEOUT))
             .context("Failed to set socket read timeout.")?;
@@ -486,11 +489,14 @@ impl FraypadServer {
 
             match self.socket.recv_from(&mut buf) {
                 Ok((len, src_addr)) => {
-                    let replies = self.core.handle_datagram(&buf[..len], src_addr, Instant::now());
+                    let replies = self
+                        .core
+                        .handle_datagram(&buf[..len], src_addr, Instant::now());
                     self.send_replies(&replies);
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
                     // Idle; fall through to housekeeping below.
                 }

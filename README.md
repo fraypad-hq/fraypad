@@ -17,14 +17,18 @@ controller, so games see a normal X360 pad.
                                         4× virtual X360 pad + MouseBoard
 ```
 
-Status: early development. The gamepad path works end to end; rumble,
-keyboard/mouse mode, and session resilience are in progress.
+Status: early development but usable. The gamepad path, rumble
+(force-feedback from games vibrates the phone), and reliable sessions
+(handshake, heartbeats, eviction, resync) all work end to end.
+Keyboard/mouse mode is the remaining piece. See "Playing" for how to point
+the app at your PC.
 
 ## Repository layout
 
 | Path                        | What it is                                                     |
 | --------------------------- | -------------------------------------------------------------- |
 | `crates/fraypad_protocol`   | Wire format shared by client and server (packets + evdev codes). |
+| `crates/fraypad_server_core` | Backend-agnostic server logic: sessions, routing, eviction.    |
 | `crates/client_gdext`       | Godot GDExtension (Rust) — the phone-side networking client.     |
 | `crates/server_evdev`       | Linux server (`fraypad` binary) — receives UDP, drives `uinput`. |
 | `godot/`                    | The Android app: UI scene, virtual sticks/buttons, GDScript.     |
@@ -46,7 +50,7 @@ Then start it:
 
 ```sh
 cargo run --release -p fraypad
-# Fraypad server listening on 0.0.0.0:54321
+# Server listening on port 54321
 ```
 
 Four virtual pads are created at startup, named `Fraypad Gamepad (P1..P4)`, and
@@ -74,7 +78,7 @@ Install and run it:
 
 ```sh
 adb install -r godot/export/fraypad-android.apk
-adb shell am start -n com.fraypad.app/com.godot.game.MainActivity
+adb shell am start -n com.fraypad.app/com.godot.game.GodotApp
 ```
 
 > If you previously saw `Unable to open Android 'build-tools' directory`, that
@@ -100,6 +104,11 @@ Godot's Editor Settings if you prefer doing it by hand.
 | `RELEASE=1`         | `0`                             | Optimized build + release export.        |
 | `APK_OUT`           | `godot/export/fraypad-android.apk` | Where to write the APK.               |
 | `ANDROID_SDK_ROOT`  | `~/android`                     | SDK root.                                |
+| `ANDROID_NDK_HOME`  | `<sdk>/ndk/<ndk>`               | NDK directory.                           |
+| `ANDROID_NDK`       | `28.2.13676358`                 | NDK version.                             |
+| `ANDROID_API`       | `36`                            | Platform / build-tools API level (setup). |
+| `ANDROID_BUILD_TOOLS` | `36.0.0`                      | build-tools revision (setup).            |
+| `SKIP_TEMPLATES=1`  | `0`                             | Skip the ~1.2 GB export-template download (setup). |
 | `GODOT_BIN`         | `godot`                         | Godot executable.                        |
 
 `build-android.sh` refuses to succeed if the exported APK does not contain a
@@ -112,26 +121,42 @@ Launch the app on the phone and the PC server at the same time; the app
 connects on startup and is assigned one of four slots. Press any button to
 drive the matching virtual pad on the PC.
 
-> The server address is currently hardcoded in `godot/main.gd`. Point it at
-> your PC's LAN IP before building.
+The first time it runs, the app uses a placeholder server address. Tap the ⚙
+button, enter your PC's LAN IP and port (e.g. `192.168.1.10:54321`), and hit
+**Save & Connect**. The address is stored on the phone, so you only set it
+once. The status line at the top shows the connection state and offers a retry
+when the server is unreachable.
 
 ## Protocol
 
-The wire format is defined in `crates/fraypad_protocol`. Two fixed-size little-endian
-packets share one UDP socket, distinguished by datagram length:
+The wire format is defined in `crates/fraypad_protocol`. Everything is a single
+fixed-size 16-byte little-endian `Packet`, so there is one datagram type on one
+UDP socket:
 
-- `InputPacket` (12 bytes) — a single input event: a Linux evdev type/code/value
-  triple plus the sender's slot and a wrapping sequence id used to drop
-  duplicate or out-of-order packets.
-- `FeedbackPacket` (8 bytes) — signalling and control: connect (with slot
-  assignment), disconnect, rejected (server full), and rumble.
+```
+offset  size  field        meaning
+  0      2    magic        0xF3A9 sanity check
+  2      1    version      protocol version (bumped on any layout change)
+  3      1    kind         PacketKind discriminant
+  4      2    player_id    controller slot (0..=3) when assigned
+  6      2    seq_id       wrapping per-route sequence (Input only)
+  8      2    event_type   evdev type; bit 15 = keyboard/mouse route
+ 10      2    code         evdev code (Input) / strong rumble magnitude
+ 12      4    value        evdev value (Input) / payload
+```
+
+`kind` selects the meaning: `Hello`/`Welcome`/`Reject`/`Bye` drive the
+handshake, `Input` carries an evdev event, `Heartbeat`/`Pong` keep the session
+alive and measure liveness, `Rumble` vibrates the phone, and `Resync` asks the
+client to re-send its whole input state (used after connecting and to self-heal
+lost UDP packets).
 
 The client's player slot is assigned by the server during the handshake. The
 server keys each session on the client's source `SocketAddr` and resolves the
 slot from that, so packets cannot be spoofed into another player's pad.
 
-Keyboard/mouse events share the `InputPacket` format; bit 15 of `packet_type`
-routes the event to the MouseBoard instead of a gamepad.
+Keyboard/mouse events share the `Input` kind; bit 15 of `event_type` routes the
+event to the MouseBoard instead of a gamepad.
 
 ## License
 
