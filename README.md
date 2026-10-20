@@ -53,13 +53,18 @@ cargo run --release -p fraypad
 # Server listening on port 54321
 ```
 
-Four virtual pads are created at startup, named `Fraypad Gamepad (P1..P4)`, and
-one shared `Fraypad MouseBoard`. Verify with:
+A shared `Fraypad MouseBoard` is created at startup. Each `Fraypad Gamepad
+(P1..P4)` appears when a phone connects and is torn down when it leaves, so
+`/dev/input` only lists pads that are actually in use. Verify with:
 
 ```sh
 sudo evtest                      # pick a Fraypad device and wiggle inputs
 sdl2-jstest --list               # games see it as an Xbox 360 controller
 ```
+
+To debug without `sudo`, add your user to the `input` group (the udev rule
+above does this) and log back in; otherwise reading the virtual devices
+requires root even though the server itself does not.
 
 Your firewall must allow inbound **UDP 54321** on the LAN, and the PC and phone
 must be on the same network.
@@ -114,6 +119,12 @@ Godot's Editor Settings if you prefer doing it by hand.
 `build-android.sh` refuses to succeed if the exported APK does not contain a
 real (non-empty) `libclient_gdext.so`, because Godot will silently package a
 0-byte placeholder when the native library is missing.
+
+A `RELEASE=1` export is signed with a local self-signed keystore that
+`setup-android.sh` generates at `~/.android/fraypad-release.keystore`. Override
+the path with `FRAYPAD_RELEASE_KEYSTORE` and the credentials with
+`FRAYPAD_RELEASE_KEYSTORE_USER` / `FRAYPAD_RELEASE_KEYSTORE_PASSWORD`. Swap in
+your own keystore before distributing.
 
 ## Playing
 

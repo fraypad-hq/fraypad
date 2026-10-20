@@ -51,9 +51,21 @@ log "building client_gdext (aarch64-linux-android) $PROFILE_DIR"
 SO_SRC="$REPO_ROOT/target/aarch64-linux-android/$PROFILE_DIR/libclient_gdext.so"
 [[ -s "$SO_SRC" ]] || die "built .so missing or empty at $SO_SRC"
 
+# Godot reads the release signing keystore from the environment (there is no
+# release-keystore editor setting, and hardcoding a machine-specific path in
+# the tracked preset would break other machines). setup-android.sh provisions
+# one; FRAYPAD_RELEASE_KEYSTORE overrides its location.
+if [[ "${RELEASE:-0}" == "1" ]]; then
+    KS="${FRAYPAD_RELEASE_KEYSTORE:-$HOME/.android/fraypad-release.keystore}"
+    [[ -f "$KS" ]] || die "release keystore not found at $KS — run scripts/setup-android.sh"
+    export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$KS"
+    export GODOT_ANDROID_KEYSTORE_RELEASE_USER="${FRAYPAD_RELEASE_KEYSTORE_USER:-fraypad}"
+    export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD="${FRAYPAD_RELEASE_KEYSTORE_PASSWORD:-android}"
+fi
+
 mkdir -p "$(dirname "$APK_OUT")"
 log "exporting APK -> $APK_OUT"
-(cd "$REPO_ROOT/godot" && "$GODOT_BIN" --headless $EXPORT_FLAG "Android" "$APK_OUT")
+(cd "$REPO_ROOT/godot" && "$GODOT_BIN" --headless "$EXPORT_FLAG" "Android" "$APK_OUT")
 
 [[ -s "$APK_OUT" ]] || die "export produced no APK"
 

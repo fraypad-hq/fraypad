@@ -26,16 +26,32 @@ const MOUSE_TOUCH_INDEX = 99
 
 func _ready() -> void:
 	focus_mode = Control.FOCUS_NONE
-	_client = get_tree().root.find_child("FraypadClient", true, false)
-	_left_stick = get_tree().root.find_child("LeftStick", true, false)
-	_right_stick = get_tree().root.find_child("RightStick", true, false)
-	
+	# Resolve siblings by unique name; the whole tree lookup would also match
+	# unrelated nodes if the scene ever grew a second client or stick.
+	_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+	_left_stick = get_node_or_null("%LeftStick") as FraypadStick
+	_right_stick = get_node_or_null("%RightStick") as FraypadStick
+
 	# Register D-pad buttons into groups for axis conflict resolution
 	match action:
 		Action.DPAD_UP, Action.DPAD_DOWN:
 			add_to_group("dpad_y")
 		Action.DPAD_LEFT, Action.DPAD_RIGHT:
 			add_to_group("dpad_x")
+
+## Backgrounding the app cancels every touch stream, so drop all fingers and
+## release the button. Without this a key held when the user switches away
+## stays pressed on the PC forever (the release touch never arrives).
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED \
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		if _fingers.is_empty():
+			return
+		_fingers.clear()
+		if _is_active:
+			_is_active = false
+			_update_visual()
+			_send_dpad_aware(false)
 
 func _is_joystick_finger(index: int) -> bool:
 	if _left_stick and _left_stick._touch_index == index:

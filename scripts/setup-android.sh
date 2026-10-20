@@ -107,6 +107,23 @@ else
         -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
 fi
 
+# ── release keystore ─────────────────────────────────────────────────────────
+# Godot refuses to export a signed release APK without one. A local,
+# self-signed keystore is fine for sideloading; replace it with your own for
+# distribution. Override the path with FRAYPAD_RELEASE_KEYSTORE.
+RELEASE_KEYSTORE="${FRAYPAD_RELEASE_KEYSTORE:-$HOME/.android/fraypad-release.keystore}"
+export FRAYPAD_RELEASE_KEYSTORE="$RELEASE_KEYSTORE"
+if [[ -f "$RELEASE_KEYSTORE" ]]; then
+    log "release keystore already present"
+else
+    log "generating release keystore at $RELEASE_KEYSTORE"
+    mkdir -p "$(dirname "$RELEASE_KEYSTORE")"
+    keytool -genkeypair \
+        -keystore "$RELEASE_KEYSTORE" -storepass android -keypass android \
+        -alias fraypad -keyalg RSA -keysize 2048 -validity 10990 \
+        -dname "CN=Fraypad,O=Fraypad,C=US" >/dev/null 2>&1
+fi
+
 # ── Godot export templates ───────────────────────────────────────────────────
 if [[ "${SKIP_TEMPLATES:-0}" == "1" ]]; then
     log "skipping export templates (SKIP_TEMPLATES=1)"

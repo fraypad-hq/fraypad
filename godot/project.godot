@@ -22,6 +22,9 @@ window/size/viewport_height=500
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/vsync/vsync_mode=0
+; The pad is laid out for a wide screen; force landscape so it never ends up
+; rendered in portrait.
+window/handheld/orientation=1
 
 [input_devices]
 

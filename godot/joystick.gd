@@ -63,6 +63,17 @@ func _ready() -> void:
 	_handle.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_handle)
 
+## Backgrounding the app cancels all touches, so recenter the stick and tell
+## the game. Otherwise a stick left deflected when the user switches away
+## keeps the character walking into a wall.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED \
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		if _touch_index == -1:
+			return
+		_touch_index = -1
+		_update_joystick(_center)
+
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		var is_pressed: bool = false

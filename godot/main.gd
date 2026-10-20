@@ -61,7 +61,7 @@ func _toggle_settings() -> void:
 
 
 func _save_settings() -> void:
-	var entered := %ServerField.text.strip_edges()
+	var entered: String = %ServerField.text.strip_edges()
 	if entered == "":
 		return
 	_server_addr = entered
@@ -118,12 +118,13 @@ func _on_disconnected() -> void:
 
 func _on_rumble(strong: int, weak: int, duration_ms: int) -> void:
 	# Scale the 0-65535 magnitudes down to the 0..1 range Android expects and
-	# vibrate the handheld for the requested duration. A zeroed rumble is the
-	# game stopping an effect: cancel whatever is still vibrating.
+	# vibrate the handheld for the requested duration. Keep the game's full
+	# duration and drive intensity with magnitude, so quiet rumbles don't
+	# truncate to a no-op.
+	#
+	# A zeroed rumble means the game stopped an effect. Handheld vibration is
+	# a fire-and-forget duration with no cancel API, so there is nothing to
+	# do: the previous buzz simply runs out its (short) remaining time.
 	var magnitude := clampf(maxf(strong, weak) / 65535.0, 0.0, 1.0)
 	if magnitude > 0.0 and duration_ms > 0:
-		# Keep the game's full duration and drive intensity with magnitude, so
-		# quiet rumbles don't truncate to a no-op.
 		Input.vibrate_handheld(maxi(duration_ms, 1), magnitude)
-	else:
-		Input.cancel_vibration()
