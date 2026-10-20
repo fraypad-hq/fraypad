@@ -69,7 +69,16 @@ func _notification(what: int) -> void:
 ## sidesteps the ordering entirely.
 func _get_client() -> FraypadClient:
 	if _client == null:
-		_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+		# Look the node up by path rather than by group. The group lookup
+		# returned null on Android: the client is a GDExtension node, and its
+		# scene-declared group membership is not visible while the rest of the
+		# scene readies, so every button silently sent nothing. The path is
+		# fixed by the scene, so resolve it from the root we belong to.
+		var root: Node = get_tree().current_scene
+		if root == null:
+			root = owner
+		if root:
+			_client = root.get_node_or_null("FraypadClient") as FraypadClient
 	return _client
 
 
@@ -209,9 +218,11 @@ func _send_dpad_aware(p_pressed: bool) -> void:
 ## when *nothing* is held stops a release from leaving the hat stuck on the
 ## direction the dying press overwrote.
 func _surviving_direction(group: String, neg_action: Action, pos_action: Action) -> int:
-	for btn in get_tree().get_nodes_in_group(group):
-		if btn != self and btn._is_active:
-			return -1 if btn.action == neg_action else 1
+	for node in get_tree().get_nodes_in_group(group):
+		# Only siblings of the same kind can express a direction; a stray node
+		# in the group (or one mid-teardown) must not be read as a button.
+		if node is GamepadButton and node != self and node._is_active:
+			return -1 if node.action == neg_action else 1
 	return 0
 
 func _send(p_pressed: bool) -> void:

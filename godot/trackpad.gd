@@ -41,7 +41,12 @@ func _ready() -> void:
 ## unregistered and the cast would yield null for the rest of the session.
 func _get_client() -> FraypadClient:
 	if _client == null:
-		_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+		# Path lookup, not group: see the note in gamepad_button.gd.
+		var root: Node = get_tree().current_scene
+		if root == null:
+			root = owner
+		if root:
+			_client = root.get_node_or_null("FraypadClient") as FraypadClient
 	return _client
 
 
