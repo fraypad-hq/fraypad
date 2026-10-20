@@ -7,9 +7,12 @@ repository.workspace = true
 homepage.workspace = true
 description = "High-performance virtual control software for Linux."
 readme = "README.md"
+keywords = ["gamepad", "controller", "uinput", "evdev", "input"]
+categories = ["hardware-support", "game-development", "os::linux-apis"]
 
 [dependencies]
 evdev = "0.13"
 fraypad_protocol = { workspace = true }
+fraypad_server_core = { workspace = true }
 bytemuck = { workspace = true }
 anyhow = { workspace = true }

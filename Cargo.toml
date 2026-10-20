@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/server_evdev",
   "crates/fraypad_protocol",
+  "crates/fraypad_server_core",
   "crates/client_gdext",
 ]
 
@@ -17,6 +18,7 @@ homepage = "https://github.com/fraypad-hq/fraypad"
 bytemuck = { version = "1.25", features = ["derive"] }
 anyhow = "1.0"
 fraypad_protocol = { path = "crates/fraypad_protocol", version = "0.3.0" }
+fraypad_server_core = { path = "crates/fraypad_server_core", version = "0.3.0" }
 
 [workspace.lints.clippy]
 all = "deny"

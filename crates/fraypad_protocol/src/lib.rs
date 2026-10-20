@@ -1,86 +1,153 @@
 //! # Fraypad Protocol
 //!
-//! This crate defines the network protocol for all Fraypad
-//! packets.
+//! The wire format shared by the Fraypad client and server.
+//!
+//! ## Design
+//!
+//! Everything is a single fixed-size [`Packet`], 16 bytes, little-endian on
+//! the wire. A `magic` + `version` header lets a server reject garbage and
+//! stale clients cheaply before touching any other field. `kind` selects which
+//! fields are meaningful for that packet.
+//!
+//! ```text
+//! offset  size  field        meaning
+//!   0      2    magic        PACKET_MAGIC sanity check
+//!   2      1    version      PROTOCOL_VERSION
+//!   3      1    kind         PacketKind discriminant
+//!   4      2    player_id    controller slot (0..=3) when assigned
+//!   6      2    seq_id       wrapping per-route sequence for Input
+//!   8      2    event_type   evdev type; bit 15 = kbm route (Input only)
+//!  10      2    code         evdev code (Input), or rumble magnitude
+//!  12      4    value        evdev value (Input), or packet payload
+//! ```
+//!
+//! The wire encoding uses Linux evdev codes as its canonical input encoding.
+//! That is an implementation detail of the transport: each backend (Linux
+//! `uinput` today, a native driver elsewhere) maps these codes onto its own
+//! device semantics, so the protocol stays backend-agnostic.
 
 use bytemuck::{Pod, Zeroable};
 
-/// A struct for a single input payload from client to server
+/// Magic value in the first two bytes of every packet.
+///
+/// Lets a receiver reject unrelated UDP traffic before interpreting fields.
+pub const PACKET_MAGIC: u16 = 0xF3A9;
+
+/// Version of this wire format.
+///
+/// Bumped on any change to the layout or the meaning of a `kind`. A server
+/// rejects packets whose version does not match, so an out-of-date phone app
+/// fails loudly instead of misparsing.
+pub const PROTOCOL_VERSION: u8 = 1;
+
+/// Number of bytes in a serialized [`Packet`].
+pub const PACKET_SIZE: usize = 16;
+
+/// The fixed-size packet exchanged between client and server.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-pub struct InputPacket {
-    /// The evdev event type
-    ///
-    /// Bit 15 is reserved as a routing flag:
-    /// * `0`: Routes to the virtual gamepad
-    /// * `1`: Routes to the virtual keyboard/mouse
-    pub packet_type: u16,
-
-    /// The assigned controller slot, supporting values from
-    /// `0` to `3`
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Pod, Zeroable)]
+pub struct Packet {
+    /// Must equal [`PACKET_MAGIC`].
+    pub magic: u16,
+    /// Must equal [`PROTOCOL_VERSION`].
+    pub version: u8,
+    /// A [`PacketKind`] discriminant.
+    pub kind: u8,
+    /// The controller slot, `0..=3`. Assigned by the server in a [`PacketKind::Welcome`].
     pub player_id: u16,
-
-    /// The evdev input code defining the specific key, button,
-    /// or axis
-    pub code: u16,
-
-    /// A wrapping sequence identifier used to discard delayed
-    /// or out-of-order packets
+    /// Wrapping sequence number. Only meaningful for [`PacketKind::Input`],
+    /// where it is tracked per slot and per route to drop duplicates and
+    /// out-of-order deliveries.
     pub seq_id: u16,
-
-    /// The input value
+    /// The evdev event type (Input only).
     ///
-    /// Represents binary state, or analog coordinates or
-    /// motion data
+    /// Bit 15 doubles as a routing flag:
+    /// * `0`: routes to the virtual gamepad
+    /// * `1`: routes to the virtual keyboard/mouse
+    ///
+    /// For [`PacketKind::Rumble`] this instead carries the weak-motor
+    /// magnitude, unused elsewhere.
+    pub event_type: u16,
+    /// The evdev code identifying a specific key, button, or axis (Input
+    /// only). For [`PacketKind::Rumble`] this carries the strong-motor
+    /// magnitude.
+    pub code: u16,
+    /// The payload: the evdev value for Input, a duration in milliseconds for
+    /// Rumble, a timestamp for Heartbeat/Pong, or a status code for
+    /// Welcome/Reject.
     pub value: i32,
 }
 
-/// A struct for a single feedback payload for intercommunication
-/// between the client and the server
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Pod, Zeroable)]
-pub struct FeedbackPacket {
-    /// The feedback event type
-    ///
-    /// Signaling (bidirectional):
-    /// * `0`: Connect - request (client to server) or ack with assigned slot (server to client)
-    /// * `1`: Disconnect (client to server)
-    /// * `2`: Rejected - all player slots are full (server to client)
-    ///
-    /// Data (server to client):
-    /// * `3`: Rumble/Vibration
-    pub packet_type: u16,
-
-    /// The target or assigned player slot, supporting values from
-    /// `0` to `3`
-    pub player_id: u16,
-
-    /// The primary payload data
-    ///
-    /// For Rumble (`type = 3`), this is the motor magnitude
-    /// (0 to 65535).
-    pub primary: u16,
-
-    /// The secondary payload data
-    ///
-    /// For Rumble (`type = 3`), this is the duration in ms.
-    pub second: u16,
+/// The kind of packet, selecting which fields are meaningful.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PacketKind {
+    /// Client → server: request a slot. No other fields used.
+    Hello = 0,
+    /// Server → client: slot granted; `player_id` holds the assigned slot.
+    Welcome = 1,
+    /// Server → client: connection refused; `value` holds a [`RejectReason`].
+    Reject = 2,
+    /// Client → server: release our slot and leave.
+    Bye = 3,
+    /// Client → server: a single input event.
+    Input = 4,
+    /// Client → server: keep-alive; `value` carries a timestamp for RTT.
+    Heartbeat = 5,
+    /// Server → client: reply to a Heartbeat; echoes the client's timestamp.
+    Pong = 6,
+    /// Server → client: vibrate the phone. See [`Packet::rumble`].
+    Rumble = 7,
+    /// Server → client: re-send a full input-state snapshot now. Sent after a
+    /// Welcome so the server learns the client's current state, and usable
+    /// later to recover from loss.
+    Resync = 8,
 }
 
-/// Wire codes carried inside `InputPacket`.
+impl PacketKind {
+    /// Convert a raw discriminant back into a `PacketKind`.
+    ///
+    /// Returns `None` for unknown values so callers can ignore future kinds
+    /// gracefully.
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Hello),
+            1 => Some(Self::Welcome),
+            2 => Some(Self::Reject),
+            3 => Some(Self::Bye),
+            4 => Some(Self::Input),
+            5 => Some(Self::Heartbeat),
+            6 => Some(Self::Pong),
+            7 => Some(Self::Rumble),
+            8 => Some(Self::Resync),
+            _ => None,
+        }
+    }
+}
+
+/// Why a server refused a connection.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(i32)]
+pub enum RejectReason {
+    /// Every player slot is currently taken.
+    ServerFull = 0,
+    /// The client's [`PROTOCOL_VERSION`] did not match the server's.
+    VersionMismatch = 1,
+}
+
+/// Wire codes carried inside [`Packet`].
 ///
-/// The wire format uses Linux evdev codes as its canonical encoding: each
-/// backend (Linux uinput today, a native driver elsewhere) maps these to its
-/// own device semantics. Clients should use the constants here rather than
-/// hardcoding numbers.
+/// See the crate docs: evdev codes are the canonical input encoding, mapped to
+/// device semantics by each backend.
 pub mod codes {
-    /// Bit set in `InputPacket::packet_type` to route a packet to the virtual
+    /// Bit set in [`Packet::event_type`] to route a packet to the virtual
     /// keyboard/mouse instead of the virtual gamepad.
     ///
     /// `0`: routes to the gamepad. `1`: routes to the keyboard/mouse.
     pub const ROUTE_KBM: u16 = 1 << 15;
 
-    /// Mask to recover the evdev event type from `InputPacket::packet_type`.
+    /// Mask to recover the evdev event type from [`Packet::event_type`].
     pub const TYPE_MASK: u16 = 0x7FFF;
 
     /// `EV_SYN` - input event sync / end of report.
@@ -92,16 +159,16 @@ pub mod codes {
     /// `EV_ABS` - an absolute axis change (sticks, triggers, d-pad).
     pub const EV_ABS: u16 = 3;
 
-    /// Build a gamepad-routed `packet_type` from an evdev event type.
+    /// Recover just the evdev event type, dropping the routing bit.
     #[must_use]
-    pub const fn gamepad(event_type: u16) -> u16 {
+    pub const fn event_type(event_type: u16) -> u16 {
         event_type & TYPE_MASK
     }
 
-    /// Build a keyboard/mouse-routed `packet_type` from an evdev event type.
+    /// Whether a packet's `event_type` is routed to the keyboard/mouse.
     #[must_use]
-    pub const fn kbm(event_type: u16) -> u16 {
-        (event_type & TYPE_MASK) | ROUTE_KBM
+    pub const fn is_kbm(event_type: u16) -> bool {
+        event_type & ROUTE_KBM != 0
     }
 
     // ── Gamepad buttons (EV_KEY) ─────────────────────────────────────────
@@ -168,37 +235,183 @@ pub mod codes {
     pub const BTN_MIDDLE: u16 = 0x112;
 }
 
+impl Packet {
+    /// Build a well-formed packet with the correct magic and version.
+    #[must_use]
+    pub const fn new(kind: PacketKind) -> Self {
+        Self {
+            magic: PACKET_MAGIC,
+            version: PROTOCOL_VERSION,
+            kind: kind as u8,
+            player_id: 0,
+            seq_id: 0,
+            event_type: 0,
+            code: 0,
+            value: 0,
+        }
+    }
+
+    /// The `PacketKind`, or `None` if the discriminant is not recognised.
+    #[must_use]
+    pub const fn kind(self) -> Option<PacketKind> {
+        PacketKind::from_u8(self.kind)
+    }
+
+    /// Whether the magic and version match this build of the protocol.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.magic == PACKET_MAGIC && self.version == PROTOCOL_VERSION
+    }
+
+    /// Build an Input packet carrying a single evdev event.
+    ///
+    /// `event_type` is a raw evdev type (the routing bit, if any, is preserved
+    /// from the value passed in).
+    #[must_use]
+    pub fn input(player_id: u16, seq_id: u16, event_type: u16, code: u16, value: i32) -> Self {
+        Self {
+            magic: PACKET_MAGIC,
+            version: PROTOCOL_VERSION,
+            kind: PacketKind::Input as u8,
+            player_id,
+            seq_id,
+            event_type,
+            code,
+            value,
+        }
+    }
+
+    /// Build a Rumble packet.
+    ///
+    /// `strong` and `weak` are motor magnitudes `0..=65535`; `duration_ms` is
+    /// how long to vibrate.
+    #[must_use]
+    pub fn rumble(player_id: u16, strong: u16, weak: u16, duration_ms: u32) -> Self {
+        Self {
+            magic: PACKET_MAGIC,
+            version: PROTOCOL_VERSION,
+            kind: PacketKind::Rumble as u8,
+            player_id,
+            seq_id: 0,
+            event_type: weak,
+            code: strong,
+            value: duration_ms.min(i32::MAX as u32) as i32,
+        }
+    }
+
+    /// The rumble magnitudes and duration, if this is a Rumble packet.
+    #[must_use]
+    pub fn rumble_params(self) -> Option<(u16, u16, u32)> {
+        if self.kind() == Some(PacketKind::Rumble) {
+            Some((self.code, self.event_type, self.value.max(0) as u32))
+        } else {
+            None
+        }
+    }
+
+    /// Serialize to the 16-byte wire representation.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; PACKET_SIZE] {
+        bytemuck::bytes_of(&self).try_into().expect("Packet is PACKET_SIZE bytes")
+    }
+
+    /// Parse from the 16-byte wire representation.
+    ///
+    /// Returns `None` if the magic or version does not match, so a caller can
+    /// drop stale or unrelated traffic without misreading fields.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let packet: &Self = bytemuck::try_from_bytes(bytes).ok()?;
+        if packet.is_valid() {
+            Some(*packet)
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn input_packet_is_twelve_bytes() {
-        assert_eq!(core::mem::size_of::<InputPacket>(), 12);
+    fn packet_is_sixteen_bytes() {
+        assert_eq!(core::mem::size_of::<Packet>(), PACKET_SIZE);
     }
 
     #[test]
-    fn feedback_packet_is_eight_bytes() {
-        assert_eq!(core::mem::size_of::<FeedbackPacket>(), 8);
+    fn packet_round_trips_through_bytes() {
+        let p = Packet::input(2, 7, codes::EV_ABS, codes::ABS_X, -1234);
+        let bytes = p.to_bytes();
+        assert_eq!(bytes.len(), PACKET_SIZE);
+        assert_eq!(Packet::from_bytes(&bytes), Some(p));
     }
 
     #[test]
-    fn routing_bit_is_isolated_from_event_type() {
-        let kbm_key = codes::kbm(codes::EV_KEY);
-        assert_eq!(kbm_key >> 15, 1);
-        assert_eq!(kbm_key & codes::TYPE_MASK, codes::EV_KEY);
-
-        let pad_abs = codes::gamepad(codes::EV_ABS);
-        assert_eq!(pad_abs >> 15, 0);
-        assert_eq!(pad_abs & codes::TYPE_MASK, codes::EV_ABS);
+    fn bad_magic_is_rejected() {
+        let mut p = Packet::input(0, 1, codes::EV_KEY, codes::BTN_SOUTH, 1);
+        p.magic = 0xDEAD;
+        assert_eq!(Packet::from_bytes(&p.to_bytes()), None);
     }
 
     #[test]
-    fn routing_helpers_are_const_constructible() {
-        // Mirrors what the client sends for a button and a stick axis.
-        assert_eq!(codes::kbm(codes::EV_KEY), 0x8001);
-        assert_eq!(codes::gamepad(codes::EV_KEY), 0x0001);
-        assert_eq!(codes::gamepad(codes::EV_ABS), 0x0003);
-        assert_eq!(codes::kbm(codes::EV_REL), 0x8002);
+    fn wrong_version_is_rejected() {
+        let mut p = Packet::new(PacketKind::Hello);
+        p.version = PROTOCOL_VERSION + 1;
+        assert!(!p.is_valid());
+        assert_eq!(Packet::from_bytes(&p.to_bytes()), None);
+    }
+
+    #[test]
+    fn truncated_bytes_are_rejected() {
+        let p = Packet::new(PacketKind::Hello).to_bytes();
+        assert_eq!(Packet::from_bytes(&p[..15]), None);
+        assert_eq!(Packet::from_bytes(&[]), None);
+    }
+
+    #[test]
+    fn kind_discriminants_round_trip() {
+        for kind in [
+            PacketKind::Hello,
+            PacketKind::Welcome,
+            PacketKind::Reject,
+            PacketKind::Bye,
+            PacketKind::Input,
+            PacketKind::Heartbeat,
+            PacketKind::Pong,
+            PacketKind::Rumble,
+            PacketKind::Resync,
+        ] {
+            assert_eq!(PacketKind::from_u8(kind as u8), Some(kind));
+        }
+        assert_eq!(PacketKind::from_u8(200), None);
+    }
+
+    #[test]
+    fn input_preserves_route_bit() {
+        let kbm = Packet::input(1, 1, codes::EV_KEY | codes::ROUTE_KBM, codes::BTN_LEFT, 1);
+        assert!(codes::is_kbm(kbm.event_type));
+        assert_eq!(codes::event_type(kbm.event_type), codes::EV_KEY);
+
+        let pad = Packet::input(1, 2, codes::EV_ABS, codes::ABS_Y, 5);
+        assert!(!codes::is_kbm(pad.event_type));
+        assert_eq!(codes::event_type(pad.event_type), codes::EV_ABS);
+    }
+
+    #[test]
+    fn rumble_params_survive_round_trip() {
+        let p = Packet::rumble(3, 40000, 20000, 250);
+        let decoded = Packet::from_bytes(&p.to_bytes()).expect("valid");
+        assert_eq!(decoded.rumble_params(), Some((40000, 20000, 250)));
+    }
+
+    #[test]
+    fn input_equality_supports_state_snapshot_diffing() {
+        // The client re-sends its full state on resync; equality lets it skip
+        // unchanged entries.
+        let a = Packet::input(0, 5, codes::EV_ABS, codes::ABS_X, 100);
+        let b = Packet::input(0, 9, codes::EV_ABS, codes::ABS_X, 100);
+        assert_ne!(a, b); // seq differs
+        assert_eq!(a.code, b.code);
     }
 }

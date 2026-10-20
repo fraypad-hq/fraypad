@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Defines the protocol for Fraypad packets"
+readme = "README.md"
+keywords = ["gamepad", "controller", "input", "uinput", "protocol"]
+categories = ["network-programming", "game-development", "hardware-support"]
 
 [dependencies]
 bytemuck = { workspace = true }

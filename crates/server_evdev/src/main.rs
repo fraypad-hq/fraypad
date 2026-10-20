@@ -1,9 +1,16 @@
 //! # Fraypad
 //!
-//! UDP server that receives input packets from Fraypad clients
-//! and emits them as virtual input events via Linux uinput.
+//! UDP server that receives Fraypad packets from clients and re-emits them as
+//! virtual input events via Linux `uinput`.
+//!
+//! All session, routing, and reliability logic lives in `fraypad_server_core`.
+//! This binary is just the Linux `uinput` [`Backend`] plus the socket loop: it
+//! feeds datagrams into the core and prints the replies the core asks it to
+//! send. A native Windows driver would implement the same [`Backend`] trait
+//! with none of this loop changed.
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::UdpSocket;
+use std::time::{Duration, Instant};
 
 use evdev::{
     AbsInfo, AbsoluteAxisCode, AttributeSet, FFEffectCode, InputEvent, KeyCode, RelativeAxisCode,
@@ -11,7 +18,12 @@ use evdev::{
 };
 
 use anyhow::{Context, Result};
-use fraypad_protocol::{FeedbackPacket, InputPacket};
+use fraypad_protocol::codes;
+use fraypad_server_core::{Backend, Config, InputEvent as CoreEvent, Rumble, Reply, ServerCore, Target};
+
+/// How long the socket blocks waiting for a datagram before the main loop
+/// wakes up to run housekeeping.
+const RECV_TIMEOUT: Duration = Duration::from_millis(50);
 
 fn build_gamepad(player_num: usize) -> Result<VirtualDevice> {
     let mut keys = AttributeSet::new();
@@ -70,7 +82,6 @@ fn build_gamepad(player_num: usize) -> Result<VirtualDevice> {
         .build()
         .context("Failed to build virtual gamepad. Do you have uinput permissions?")
 }
-
 
 #[allow(clippy::too_many_lines)]
 fn build_mouseboard() -> Result<VirtualDevice> {
@@ -217,78 +228,123 @@ fn build_mouseboard() -> Result<VirtualDevice> {
         .context("Failed to build virtual mouseboard. Do you have uinput permissions?")
 }
 
-enum ConnectOutcome {
-    Connected(usize),
-    Reconnected(usize),
-    Rejected,
+/// The set of button codes that make up a gamepad's neutral (all-released)
+/// state.
+const NEUTRAL_KEYS: &[u16] = &[
+    codes::BTN_SOUTH,
+    codes::BTN_EAST,
+    codes::BTN_NORTH,
+    codes::BTN_WEST,
+    codes::BTN_TL,
+    codes::BTN_TR,
+    codes::BTN_TL2,
+    codes::BTN_TR2,
+    codes::BTN_SELECT,
+    codes::BTN_START,
+    codes::BTN_MODE,
+    codes::BTN_THUMBL,
+    codes::BTN_THUMBR,
+];
+
+/// The set of axis codes that make up a gamepad's neutral (centered) state.
+const NEUTRAL_AXES: &[u16] = &[
+    codes::ABS_X,
+    codes::ABS_Y,
+    codes::ABS_RX,
+    codes::ABS_RY,
+    codes::ABS_Z,
+    codes::ABS_RZ,
+    codes::ABS_HAT0X,
+    codes::ABS_HAT0Y,
+];
+
+/// Build the event batch that returns a gamepad to neutral: every button
+/// released (value 0) and every axis centered (value 0), then a sync.
+fn neutral_events() -> Vec<InputEvent> {
+    let mut events = Vec::with_capacity(NEUTRAL_KEYS.len() + NEUTRAL_AXES.len() + 1);
+    for &code in NEUTRAL_KEYS {
+        events.push(InputEvent::new(codes::EV_KEY, code, 0));
+    }
+    for &code in NEUTRAL_AXES {
+        events.push(InputEvent::new(codes::EV_ABS, code, 0));
+    }
+    events.push(InputEvent::new(codes::EV_SYN, 0, 0));
+    events
 }
 
-/// Pure session state, separated from device I/O for testability.
-struct SessionTable {
-    clients: [Option<SocketAddr>; 4],
-    last_gamepad_seq_ids: [u16; 4],
-    last_kbm_seq_ids: [u16; 4],
+/// Linux `uinput` implementation of the server [`Backend`].
+///
+/// Pads are created on connect and destroyed on disconnect, so only slots with
+/// a live client exist as devices. The keyboard/mouse board is shared and
+/// created eagerly (cheap, and shared across players).
+struct EvdevBackend {
+    pads: [Option<VirtualDevice>; fraypad_server_core::MAX_PLAYERS],
+    mouseboard: VirtualDevice,
 }
 
-impl SessionTable {
-    fn new() -> Self {
-        Self {
-            clients: [None; 4],
-            last_gamepad_seq_ids: [0; 4],
-            last_kbm_seq_ids: [0; 4],
+impl EvdevBackend {
+    fn new() -> Result<Self> {
+        let mouseboard = build_mouseboard()?;
+        println!("Mouseboard created.");
+        Ok(Self {
+            pads: [None, None, None, None],
+            mouseboard,
+        })
+    }
+}
+
+impl Backend for EvdevBackend {
+    fn create_pad(&mut self, slot: usize) {
+        match build_gamepad(slot) {
+            Ok(device) => {
+                self.pads[slot] = Some(device);
+                println!("Player {} pad created.", slot + 1);
+            }
+            Err(e) => eprintln!("Failed to create pad for player {}: {e}", slot + 1),
         }
     }
 
-    fn connect(&mut self, src_addr: SocketAddr) -> ConnectOutcome {
-        if let Some(slot) = self.clients.iter().position(|c| *c == Some(src_addr)) {
-            // A reconnect starts a fresh sequence so the client's counter
-            // (which also restarts at 0) is not rejected as stale.
-            self.last_gamepad_seq_ids[slot] = 0;
-            self.last_kbm_seq_ids[slot] = 0;
-            return ConnectOutcome::Reconnected(slot);
+    fn destroy_pad(&mut self, slot: usize) {
+        // Dropping the VirtualDevice destroys the uinput node.
+        if self.pads[slot].take().is_some() {
+            println!("Player {} pad destroyed.", slot + 1);
         }
-        if let Some(slot) = self.clients.iter().position(|c| c.is_none()) {
-            self.clients[slot] = Some(src_addr);
-            return ConnectOutcome::Connected(slot);
+    }
+
+    fn neutralize_pad(&mut self, slot: usize) {
+        if let Some(device) = self.pads[slot].as_mut()
+            && let Err(e) = device.emit(&neutral_events())
+        {
+            eprintln!("Failed to neutralize player {} pad: {e}", slot + 1);
         }
-        ConnectOutcome::Rejected
     }
 
-    /// Resolve a sender's address to its assigned slot, if any.
-    fn slot_of(&self, src_addr: SocketAddr) -> Option<usize> {
-        self.clients.iter().position(|c| *c == Some(src_addr))
-    }
+    fn emit(&mut self, target: Target, event: CoreEvent) {
+        let ev = InputEvent::new(event.event_type, event.code, event.value);
+        let sync = InputEvent::new(codes::EV_SYN, 0, 0);
 
-    fn disconnect(&mut self, src_addr: SocketAddr) -> Option<usize> {
-        let slot = self.clients.iter().position(|c| *c == Some(src_addr))?;
-        self.clients[slot] = None;
-        self.last_gamepad_seq_ids[slot] = 0;
-        self.last_kbm_seq_ids[slot] = 0;
-        // TODO: consider a heartbeat packet for timeout-based eviction
-        Some(slot)
-    }
-
-    /// Returns `true` and advances the stored seq if `seq_id` is a valid
-    /// new packet. Returns `false` for duplicates and out-of-order packets.
-    fn check_seq(&mut self, player_index: usize, seq_id: u16, kbm: bool) -> bool {
-        let last = if kbm {
-            &mut self.last_kbm_seq_ids[player_index]
-        } else {
-            &mut self.last_gamepad_seq_ids[player_index]
+        let device = match target {
+            Target::Gamepad(slot) => self.pads[slot].as_mut(),
+            Target::KeyboardMouse => Some(&mut self.mouseboard),
         };
-        let diff = seq_id.wrapping_sub(*last);
-        if diff == 0 || diff >= 32768 {
-            return false;
+
+        if let Some(device) = device
+            && let Err(e) = device.emit(&[ev, sync])
+        {
+            eprintln!("Failed to emit event: {e}");
         }
-        *last = seq_id;
-        true
+    }
+
+    fn poll_rumble(&mut self, _slot: usize) -> Vec<Rumble> {
+        // Force-feedback reading is wired up in a later milestone; the device
+        // already advertises FF_RUMBLE so games can send effects once the
+        // reader lands.
+        Vec::new()
     }
 }
 
 struct FraypadServer {
-    gamepads: [VirtualDevice; 4],
-    mouseboard: VirtualDevice,
-    sessions: SessionTable,
+    core: ServerCore<EvdevBackend>,
     socket: UdpSocket,
 }
 
@@ -296,123 +352,52 @@ impl FraypadServer {
     fn new() -> Result<Self> {
         println!("Welcome to Fraypad server! Building virtual devices...");
 
-        let gamepads = [
-            build_gamepad(0).context("Failed to build gamepad 1")?,
-            build_gamepad(1).context("Failed to build gamepad 2")?,
-            build_gamepad(2).context("Failed to build gamepad 3")?,
-            build_gamepad(3).context("Failed to build gamepad 4")?,
-        ];
-        println!("Gamepads 1-4 created.");
-
-        let mouseboard = build_mouseboard()?;
-        println!("Mouseboard created.");
+        let backend = EvdevBackend::new()?;
+        let core = ServerCore::new(backend, Config::default());
 
         let socket =
             UdpSocket::bind("0.0.0.0:54321").context("Failed to bind UDP socket.")?;
+        socket
+            .set_read_timeout(Some(RECV_TIMEOUT))
+            .context("Failed to set socket read timeout.")?;
         println!("Server listening on port 54321");
 
-        Ok(Self {
-            gamepads,
-            mouseboard,
-            sessions: SessionTable::new(),
-            socket,
-        })
+        Ok(Self { core, socket })
     }
 
-    /// Emit an input event on behalf of a connected client.
-    ///
-    /// The player slot is resolved from the sender's address, never from the
-    /// packet, so a client cannot inject input into another player's pad.
-    /// Packets from unregistered addresses are dropped.
-    fn handle_input(&mut self, packet: &InputPacket, src_addr: SocketAddr) {
-        let Some(player_index) = self.sessions.slot_of(src_addr) else {
-            return;
-        };
-
-        let routing_bit = packet.packet_type >> 15;
-        let event_type = packet.packet_type & 0x7FFF;
-
-        if !self.sessions.check_seq(player_index, packet.seq_id, routing_bit != 0) {
-            return;
-        }
-
-        let event = InputEvent::new(event_type, packet.code, packet.value);
-        let sync_event = InputEvent::new(0, 0, 0);
-
-        let target = if routing_bit == 0 {
-            &mut self.gamepads[player_index]
-        } else {
-            &mut self.mouseboard
-        };
-
-        if let Err(e) = target.emit(&[event, sync_event]) {
-            eprintln!("Failed to emit event: {}", e);
-        }
-    }
-
-    fn handle_sidecar(&mut self, packet: &FeedbackPacket, src_addr: SocketAddr) {
-        match packet.packet_type {
-            0 => match self.sessions.connect(src_addr) {
-                ConnectOutcome::Connected(slot) => {
-                    println!("Player {} connected: {}", slot + 1, src_addr);
-                    let ack = FeedbackPacket {
-                        packet_type: 0,
-                        player_id: slot as u16,
-                        primary: 0,
-                        second: 0,
-                    };
-                    let _ = self.socket.send_to(bytemuck::bytes_of(&ack), src_addr);
-                }
-                ConnectOutcome::Reconnected(slot) => {
-                    let ack = FeedbackPacket {
-                        packet_type: 0,
-                        player_id: slot as u16,
-                        primary: 0,
-                        second: 0,
-                    };
-                    let _ = self.socket.send_to(bytemuck::bytes_of(&ack), src_addr);
-                }
-                ConnectOutcome::Rejected => {
-                    println!("Rejected connection from {} - all slots full.", src_addr);
-                    let reject = FeedbackPacket {
-                        packet_type: 2,
-                        player_id: 0,
-                        primary: 0,
-                        second: 0,
-                    };
-                    let _ = self.socket.send_to(bytemuck::bytes_of(&reject), src_addr);
-                }
-            },
-
-            1 => {
-                if let Some(slot) = self.sessions.disconnect(src_addr) {
-                    println!("Player {} disconnected: {}", slot + 1, src_addr);
-                }
-            }
-
-            3 => println!("Received rumble packet from {}: {:#?}", src_addr, packet),
-
-            _ => {}
+    fn send_replies(&self, replies: &[Reply]) {
+        for reply in replies {
+            let _ = self.socket.send_to(&reply.packet.to_bytes(), reply.to);
         }
     }
 
     fn run(&mut self) -> Result<()> {
-        let mut aligned_buf = [0u32; 3];
-        let buf = bytemuck::bytes_of_mut(&mut aligned_buf);
+        // 16-byte packet; over-allocate a touch and slice to the actual length.
+        let mut buf = [0u8; 64];
+        let interval = self.core.housekeep_interval();
+        let mut last_housekeep = Instant::now();
 
         loop {
-            let (len, src_addr) = self.socket.recv_from(buf).context("UDP read error")?;
+            match self.socket.recv_from(&mut buf) {
+                Ok((len, src_addr)) => {
+                    let replies = self.core.handle_datagram(&buf[..len], src_addr, Instant::now());
+                    self.send_replies(&replies);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    // Idle; fall through to housekeeping below.
+                }
+                Err(e) => return Err(e).context("UDP read error"),
+            }
 
-            match len {
-                12 => {
-                    let packet: &InputPacket = bytemuck::from_bytes(&buf[..12]);
-                    self.handle_input(packet, src_addr);
-                }
-                8 => {
-                    let packet: &FeedbackPacket = bytemuck::from_bytes(&buf[..8]);
-                    self.handle_sidecar(packet, src_addr);
-                }
-                _ => {}
+            // Run housekeeping whenever the interval has elapsed, regardless of
+            // whether the last recv timed out or returned traffic.
+            let now = Instant::now();
+            if now.duration_since(last_housekeep) >= interval {
+                last_housekeep = now;
+                let replies = self.core.housekeep(now);
+                self.send_replies(&replies);
             }
         }
     }
@@ -420,151 +405,4 @@ impl FraypadServer {
 
 fn main() -> Result<()> {
     FraypadServer::new()?.run()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    fn addr(port: u16) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
-    }
-
-    #[test]
-    fn connect_assigns_first_free_slot() {
-        let mut s = SessionTable::new();
-        assert!(matches!(s.connect(addr(1)), ConnectOutcome::Connected(0)));
-    }
-
-    #[test]
-    fn connect_fills_slots_in_order() {
-        let mut s = SessionTable::new();
-        for (port, expected_slot) in (1u16..=4).zip(0usize..=3) {
-            assert!(matches!(s.connect(addr(port)), ConnectOutcome::Connected(slot) if slot == expected_slot));
-        }
-    }
-
-    #[test]
-    fn reconnect_returns_existing_slot() {
-        let mut s = SessionTable::new();
-        s.connect(addr(1));
-        assert!(matches!(s.connect(addr(1)), ConnectOutcome::Reconnected(0)));
-    }
-
-    #[test]
-    fn reject_when_all_slots_full() {
-        let mut s = SessionTable::new();
-        for port in 1u16..=4 {
-            s.connect(addr(port));
-        }
-        assert!(matches!(s.connect(addr(5)), ConnectOutcome::Rejected));
-    }
-
-    #[test]
-    fn disconnect_frees_slot_for_reuse() {
-        let mut s = SessionTable::new();
-        s.connect(addr(1));
-        s.disconnect(addr(1));
-        assert!(matches!(s.connect(addr(2)), ConnectOutcome::Connected(0)));
-    }
-
-    #[test]
-    fn disconnect_resets_seq_ids() {
-        let mut s = SessionTable::new();
-        s.connect(addr(1));
-        s.check_seq(0, 10, false);
-        s.check_seq(0, 20, true);
-        s.disconnect(addr(1));
-        assert_eq!(s.last_gamepad_seq_ids[0], 0);
-        assert_eq!(s.last_kbm_seq_ids[0], 0);
-    }
-
-    #[test]
-    fn seq_accepts_sequential_packets() {
-        let mut s = SessionTable::new();
-        assert!(s.check_seq(0, 1, false));
-        assert!(s.check_seq(0, 2, false));
-        assert!(s.check_seq(0, 3, false));
-    }
-
-    #[test]
-    fn seq_drops_duplicate() {
-        let mut s = SessionTable::new();
-        s.check_seq(0, 5, false);
-        assert!(!s.check_seq(0, 5, false));
-    }
-
-    #[test]
-    fn seq_drops_out_of_order() {
-        let mut s = SessionTable::new();
-        s.check_seq(0, 10, false);
-        assert!(!s.check_seq(0, 5, false));
-    }
-
-    #[test]
-    fn seq_accepts_wrapping() {
-        let mut s = SessionTable::new();
-        s.last_gamepad_seq_ids[0] = u16::MAX;
-        assert!(s.check_seq(0, 0, false));
-    }
-
-    #[test]
-    fn seq_tracked_independently_per_player() {
-        let mut s = SessionTable::new();
-        s.check_seq(0, 5, false);
-        assert!(s.check_seq(1, 5, false));
-    }
-
-    #[test]
-    fn seq_tracked_independently_gamepad_vs_kbm() {
-        let mut s = SessionTable::new();
-        s.check_seq(0, 5, false);
-        assert!(s.check_seq(0, 5, true));
-    }
-
-    #[test]
-    fn disconnect_unknown_addr_returns_none() {
-        let mut s = SessionTable::new();
-        assert!(s.disconnect(addr(99)).is_none());
-    }
-
-    #[test]
-    fn disconnect_middle_slot_reuses_it() {
-        let mut s = SessionTable::new();
-        s.connect(addr(1));
-        s.connect(addr(2));
-        s.connect(addr(3));
-        s.disconnect(addr(2));
-        assert!(matches!(s.connect(addr(4)), ConnectOutcome::Connected(1)));
-    }
-
-    #[test]
-    fn slot_of_resolves_registered_addr() {
-        let mut s = SessionTable::new();
-        s.connect(addr(1));
-        s.connect(addr(2));
-        assert_eq!(s.slot_of(addr(2)), Some(1));
-        assert_eq!(s.slot_of(addr(1)), Some(0));
-    }
-
-    #[test]
-    fn slot_of_unknown_addr_is_none() {
-        let s = SessionTable::new();
-        assert_eq!(s.slot_of(addr(7)), None);
-    }
-
-    #[test]
-    fn reconnect_resets_seq_ids() {
-        let mut s = SessionTable::new();
-        s.connect(addr(1));
-        s.check_seq(0, 10, false);
-        s.check_seq(0, 20, true);
-        // Same addr reconnects; the client restarts its counter at 0, so the
-        // server must clear its stored seq or everything would be dropped.
-        assert!(matches!(s.connect(addr(1)), ConnectOutcome::Reconnected(0)));
-        assert_eq!(s.last_gamepad_seq_ids[0], 0);
-        assert_eq!(s.last_kbm_seq_ids[0], 0);
-        assert!(s.check_seq(0, 1, false));
-    }
 }

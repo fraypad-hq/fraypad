@@ -87,6 +87,7 @@ dependencies = [
  "bytemuck",
  "evdev",
  "fraypad_protocol",
+ "fraypad_server_core",
 ]
 
 [[package]]
@@ -94,6 +95,13 @@ name = "fraypad_protocol"
 version = "0.3.0"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "fraypad_server_core"
+version = "0.3.0"
+dependencies = [
+ "fraypad_protocol",
 ]
 
 [[package]]
