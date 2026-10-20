@@ -14,6 +14,12 @@ func _ready() -> void:
 	Input.use_accumulated_input = false
 	_load_config()
 
+	# ── Pad geometry ─────────────────────────────────────────────────
+	# Place the controller controls in code, then redo it whenever the canvas
+	# or window changes (rotation, resize, split-screen).
+	%PadFit.resized.connect(_layout_pad)
+	_layout_pad()
+
 	# ── Settings panel ───────────────────────────────────────────────
 	%SettingsButton.pressed.connect(_toggle_settings)
 	%SettingsPanel.visible = false
@@ -42,6 +48,92 @@ func _ready() -> void:
 
 	client.set_server(_server_addr)
 	client.connect_to_server()
+
+
+# ── Pad geometry ─────────────────────────────────────────────────────────
+
+## Lay the gamepad controls out like an Xbox 360 pad, in code.
+##
+## Godot's `expand` stretch mode widens the canvas to match the window aspect,
+## so a 20:9 phone gives a canvas much wider than the 900x500 design size.
+## Anchors alone would then stretch the d-pad arms and face buttons into
+## lopsided rectangles. Instead every control is sized off the canvas *height*
+## (so round/square things stay round/square at any aspect) and positioned in
+## px offsets, with the two thumb clusters pinned to the left and right edges.
+func _layout_pad() -> void:
+	var w: float = %PadFit.size.x
+	var h: float = %PadFit.size.y
+	if w <= 1.0 or h <= 1.0:
+		return
+
+	var margin: float = h * 0.02
+
+	# ── Top band: triggers reach the corners, bumpers sit inboard ────
+	var band_h: float = h * 0.17
+	var trigger_w: float = w * 0.11
+	var bumper_w: float = w * 0.085
+	_place(%LT, margin, margin, trigger_w, band_h - margin)
+	_place(%LB, margin + trigger_w + margin, margin, bumper_w, band_h - margin)
+	_place(%RT, w - margin - trigger_w, margin, trigger_w, band_h - margin)
+	_place(%RB, w - margin - trigger_w - margin - bumper_w, margin, bumper_w, band_h - margin)
+
+	# ── Top centre: Back / Xbox / Start, sized off height ────────────
+	var menu_h: float = band_h - margin
+	var menu_w: float = h * 0.13
+	var gap: float = h * 0.02
+	_place(%Xbox, w * 0.5 - menu_w * 0.5, margin, menu_w, menu_h)
+	_place(%Back, w * 0.5 - menu_w * 0.5 - gap - menu_w, margin, menu_w, menu_h)
+	_place(%Start, w * 0.5 + menu_w * 0.5 + gap, margin, menu_w, menu_h)
+
+	# ── Thumb clusters: square so the sticks stay circular ───────────
+	# Vertical budget, in fractions of the height:
+	#   bumpers 0..0.17 | cross 0.26..0.62 | thumbstick 0.64..0.98
+	var btn: float = h * 0.115          # one d-pad arm / one face button
+	var cluster_x: float = h * 0.40     # distance from the side edge to the cross centre
+	var cluster_y: float = h * 0.44     # vertical centre of the cross / diamond
+	var stick: float = h * 0.34         # thumbstick touch area (square)
+
+	# D-pad cross on the left.
+	var dcx: float = cluster_x
+	var dcy: float = cluster_y
+	_place(%DUp, dcx - btn * 0.5, dcy - btn * 1.5, btn, btn)
+	_place(%DLeft, dcx - btn * 1.5, dcy - btn * 0.5, btn, btn)
+	_place(%DDown, dcx - btn * 0.5, dcy - btn * 0.5, btn, btn)
+	_place(%DRight, dcx + btn * 0.5, dcy - btn * 0.5, btn, btn)
+
+	# Face diamond on the right.
+	var fcx: float = w - cluster_x
+	var fcy: float = cluster_y
+	_place(%BtnY, fcx - btn * 0.5, fcy - btn * 1.5, btn, btn)
+	_place(%BtnX, fcx - btn * 1.5, fcy - btn * 0.5, btn, btn)
+	_place(%BtnA, fcx - btn * 0.5, fcy - btn * 0.5, btn, btn)
+	_place(%BtnB, fcx + btn * 0.5, fcy - btn * 0.5, btn, btn)
+
+	# Sticks in the bottom corners, below the crosses.
+	_place(%LeftStick, margin, h - margin - stick, stick, stick)
+	_place(%RightStick, w - margin - stick, h - margin - stick, stick, stick)
+
+	# Scale label text with the pad so it stays readable on a big phone and
+	# doesn't overflow the button on a small one.
+	for ctrl in [%LT, %LB, %RB, %RT, %Back, %Xbox, %Start,
+			%DUp, %DLeft, %DDown, %DRight,
+			%BtnA, %BtnB, %BtnX, %BtnY]:
+		var fs: int = maxi(12, int(h * 0.055))
+		ctrl.add_theme_font_size_override("font_size", fs)
+
+
+## Park a control at an absolute pixel rect. Anchors are pinned to the top-left
+## so the offsets are the whole geometry and the control keeps the exact size
+## the caller computed (no stretching from fractional anchors).
+func _place(ctrl: Control, x: float, y: float, cw: float, ch: float) -> void:
+	ctrl.anchor_left = 0.0
+	ctrl.anchor_top = 0.0
+	ctrl.anchor_right = 0.0
+	ctrl.anchor_bottom = 0.0
+	ctrl.offset_left = x
+	ctrl.offset_top = y
+	ctrl.offset_right = x + cw
+	ctrl.offset_bottom = y + ch
 
 
 # ── Config ───────────────────────────────────────────────────────────────
@@ -75,7 +167,7 @@ func _toggle_mode() -> void:
 		_release_gamepad()
 	%GamepadView.visible = not to_kbm
 	%KBMView.visible = to_kbm
-	%ModeButton.text = "🎮" if to_kbm else "⌨"
+	%ModeButton.text = "🎮 Gamepad" if to_kbm else "⌨ KBM"
 
 
 ## Recenter both sticks and let every button drop whatever it is holding, so

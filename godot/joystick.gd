@@ -6,8 +6,6 @@ signal value_changed(joystick_value: Vector2)
 ## click (L3 / R3).
 signal clicked
 
-@export var max_distance: float = 60.0
-
 ## Radial deadzone. Inputs with a magnitude below this emit exactly zero so
 ## tiny thumb-rest drift never registers as movement. Above it the output is
 ## rescaled so the stick still reaches full deflection.
@@ -15,16 +13,20 @@ signal clicked
 
 ## A press-release inside this travel distance and this time counts as a tap,
 ## which fires `clicked` (the stick click, L3 / R3) instead of a drag.
-@export var tap_max_travel: float = 16.0
+## Travel is measured against the stick's own size, so this scales with it.
+@export var tap_max_travel: float = 20.0
 @export var tap_max_seconds: float = 0.30
-
-## Radius (px) around the knob center that counts as "tapping the knob" for
-## L3/R3; the 48 px knob sits in the middle of the 160 px control.
-const KNOB_RADIUS: float = 40.0
 
 var _touch_index: int = -1
 var _center: Vector2
 var output: Vector2 = Vector2.ZERO
+
+## Radius of the deflection circle, derived from the control's actual size in
+## `_ready` so the stick scales with the screen instead of staying a fixed
+## pixel size on a large phone display.
+var _radius: float = 60.0
+## Diameter of the draggable knob, also derived from the control size.
+var _knob: float = 48.0
 
 var _press_pos: Vector2 = Vector2.ZERO
 var _press_time: float = 0.0
@@ -34,34 +36,48 @@ var _bg: Panel
 var _handle: Panel
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(max_distance * 2 + 40, max_distance * 2 + 40)
-	_center = custom_minimum_size / 2.0
-	
+	_build()
+	# Fill the control rect and take the circle radius from it. The scene sizes
+	# this node per screen, so no hardcoded pixel size here.
+	resized.connect(_layout)
+
+## Recompute the circle and knob geometry from the current control rect.
+func _layout() -> void:
+	var side: float = minf(size.x, size.y)
+	_radius = side * 0.5 - 6.0
+	_knob = side * 0.42
+	_center = size * 0.5
+
+	if _bg:
+		_bg.size = Vector2(_radius * 2, _radius * 2)
+		_bg.position = _center - Vector2(_radius, _radius)
+	if _handle:
+		_handle.size = Vector2(_knob, _knob)
+		_handle.position = _center - Vector2(_knob, _knob) * 0.5
+
+
+func _build() -> void:
 	_bg = Panel.new()
 	var bg_style = StyleBoxFlat.new()
-	bg_style.bg_color = Color(0.2, 0.2, 0.2, 0.5)
-	bg_style.corner_radius_top_left = int(max_distance)
-	bg_style.corner_radius_top_right = int(max_distance)
-	bg_style.corner_radius_bottom_left = int(max_distance)
-	bg_style.corner_radius_bottom_right = int(max_distance)
+	bg_style.bg_color = Color(0.18, 0.18, 0.20, 0.85)
+	bg_style.border_color = Color(0.35, 0.35, 0.38, 0.9)
+	bg_style.set_border_width_all(2)
+	bg_style.set_corner_radius_all(999)
 	_bg.add_theme_stylebox_override("panel", bg_style)
-	_bg.size = Vector2(max_distance * 2, max_distance * 2)
-	_bg.position = _center - Vector2(max_distance, max_distance)
 	_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_bg)
-	
+
 	_handle = Panel.new()
 	var handle_style = StyleBoxFlat.new()
-	handle_style.bg_color = Color(0.8, 0.8, 0.8, 0.8)
-	handle_style.corner_radius_top_left = 24
-	handle_style.corner_radius_top_right = 24
-	handle_style.corner_radius_bottom_left = 24
-	handle_style.corner_radius_bottom_right = 24
+	handle_style.bg_color = Color(0.30, 0.30, 0.34, 1.0)
+	handle_style.border_color = Color(0.9, 0.9, 0.92, 0.95)
+	handle_style.set_border_width_all(3)
+	handle_style.set_corner_radius_all(999)
 	_handle.add_theme_stylebox_override("panel", handle_style)
-	_handle.size = Vector2(48, 48)
-	_handle.position = _center - Vector2(24, 24)
 	_handle.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_handle)
+
+	_layout()
 
 ## Backgrounding the app cancels all touches, so recenter the stick and tell
 ## the game. Otherwise a stick left deflected when the user switches away
@@ -121,23 +137,25 @@ func _gui_input(event: InputEvent) -> void:
 
 func _update_joystick(pos: Vector2) -> void:
 	var diff = pos - _center
-	if diff.length() > max_distance:
-		diff = diff.normalized() * max_distance
-	output = _apply_deadzone(diff / max_distance)
-	
-	_handle.position = (_center + diff) - Vector2(24, 24)
+	var limit: float = maxf(_radius, 1.0)
+	if diff.length() > limit:
+		diff = diff.normalized() * limit
+	output = _apply_deadzone(diff / limit)
+
+	_handle.position = (_center + diff) - Vector2(_knob, _knob) * 0.5
 	value_changed.emit(output)
 
 ## Fire `clicked` if this press-release was a quick tap rather than a drag.
 ##
-## The press must start on the knob itself (~40 px of center), so a tap near
-## the edge of the control area can't fire L3/R3; the short travel/time
-## window keeps aiming gestures from registering as clicks.
+## The press must start on the knob itself (within the knob's radius of
+## center), so a tap near the rim of the control can't fire L3/R3; the short
+## travel/time window keeps aiming gestures from registering as clicks. Both
+## thresholds scale with the stick, which is sized per screen.
 func _maybe_emit_click() -> void:
 	var elapsed := Time.get_ticks_msec() / 1000.0 - _press_time
-	if _press_pos.distance_to(_center) > KNOB_RADIUS:
+	if _press_pos.distance_to(_center) > _knob * 0.6:
 		return
-	if _travelled <= tap_max_travel and elapsed <= tap_max_seconds:
+	if _travelled <= tap_max_travel * (_radius / 60.0) and elapsed <= tap_max_seconds:
 		clicked.emit()
 
 ## Map a raw stick vector through a radial deadzone, rescaling the region

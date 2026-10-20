@@ -1,0 +1,54 @@
+[gd_resource type="Theme" load_steps=4 format=3]
+
+; Dark, chunky controller theme. Font sizes are generous because the pad is
+; driven by thumbs on a phone, and the pressed state has to be obvious at a
+; glance mid-game.
+
+[sub_resource type="StyleBoxFlat" id="btn_normal"]
+bg_color = Color(0.16, 0.16, 0.19, 0.9)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.4, 0.4, 0.45, 0.9)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_left = 14
+corner_radius_bottom_right = 14
+
+[sub_resource type="StyleBoxFlat" id="btn_pressed"]
+bg_color = Color(0.35, 0.75, 1.0, 0.95)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 1, 1, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_left = 14
+corner_radius_bottom_right = 14
+
+[sub_resource type="StyleBoxFlat" id="btn_hover"]
+bg_color = Color(0.22, 0.22, 0.26, 0.95)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.6, 0.6, 0.65, 0.9)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_left = 14
+corner_radius_bottom_right = 14
+
+[resource]
+Button/colors/font_color = Color(0.92, 0.92, 0.95, 1)
+Button/colors/font_pressed_color = Color(0.05, 0.05, 0.08, 1)
+Button/colors/font_hover_color = Color(1, 1, 1, 1)
+Button/font_sizes/font_size = 20
+Button/styles/normal = SubResource("btn_normal")
+Button/styles/pressed = SubResource("btn_pressed")
+Button/styles/hover = SubResource("btn_hover")
+Button/styles/focus = SubResource("btn_normal")
+LineEdit/colors/font_color = Color(0.92, 0.92, 0.95, 1)
+LineEdit/font_sizes/font_size = 20
+Label/colors/font_color = Color(0.9, 0.9, 0.92, 1)

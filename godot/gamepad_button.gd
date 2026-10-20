@@ -147,8 +147,10 @@ func _input(event: InputEvent) -> void:
 		_update_visual()
 		_send_dpad_aware(_is_active)
 
+## Brighten the button while it is held. The base colour comes from the scene
+## (Xbox face buttons are tinted), so this multiplies rather than replaces.
 func _update_visual() -> void:
-	modulate = Color(0.55, 0.55, 0.55) if _is_active else Color.WHITE
+	modulate = Color(1.7, 1.7, 1.7) if _is_active else Color.WHITE
 
 func _send_dpad_aware(p_pressed: bool) -> void:
 	match action:
