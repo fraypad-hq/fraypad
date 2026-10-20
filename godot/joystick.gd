@@ -1,5 +1,5 @@
 extends Control
-class_name VirtualJoystick
+class_name FraypadStick
 
 signal value_changed(joystick_value: Vector2)
 

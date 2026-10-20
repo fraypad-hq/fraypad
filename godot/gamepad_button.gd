@@ -14,8 +14,8 @@ enum Action {
 @export var overlap_margin: float = 18.0
 
 var _client: FraypadClient
-var _left_stick: VirtualJoystick
-var _right_stick: VirtualJoystick
+var _left_stick: FraypadStick
+var _right_stick: FraypadStick
 
 # Maps touch_index -> bool (is this finger currently inside this button?)
 var _fingers: Dictionary = {}
