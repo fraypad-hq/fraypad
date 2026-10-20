@@ -232,8 +232,15 @@ func _send(p_pressed: bool) -> void:
 	match action:
 		Action.FACE_A:        client.send_button(0x130, p_pressed)
 		Action.FACE_B:        client.send_button(0x131, p_pressed)
-		Action.FACE_X:        client.send_button(0x133, p_pressed)
-		Action.FACE_Y:        client.send_button(0x134, p_pressed)
+		# X and Y are deliberately crossed over relative to the uapi aliases.
+		# The kernel says `BTN_X = BTN_NORTH = 0x133`, but the code that the
+		# host actually sees is consumed through the Gamepad API, which lays
+		# the face buttons out the other way round: sending 0x133 for the
+		# button labelled Y is what makes a gamepad tester report Y. Do not
+		# "fix" these two back to match the uapi - that reintroduces the swap
+		# users see on the PC.
+		Action.FACE_X:        client.send_button(0x134, p_pressed)
+		Action.FACE_Y:        client.send_button(0x133, p_pressed)
 		
 		Action.BUMPER_LEFT:   client.send_button(0x136, p_pressed)
 		Action.BUMPER_RIGHT:  client.send_button(0x137, p_pressed)

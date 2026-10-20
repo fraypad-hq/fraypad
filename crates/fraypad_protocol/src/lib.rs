@@ -176,15 +176,20 @@ pub mod codes {
     pub const BTN_SOUTH: u16 = 0x130;
     /// B / circle - right face button.
     pub const BTN_EAST: u16 = 0x131;
-    /// North face button. On an Xbox pad this is the **X** button:
-    /// `BTN_X = BTN_NORTH = 0x133` in the Linux uapi, which is what the
-    /// xpad driver emits for the physical X key.
-    pub const BTN_NORTH: u16 = 0x133;
-    /// West face button. On an Xbox pad this is the **Y** button.
+    /// North face button. The uapi aliases `BTN_X = BTN_NORTH`, so 0x133 is
+    /// named after **X**.
     ///
-    /// `BTN_Y = BTN_WEST = 0x134` in the Linux uapi (the xpad driver's
-    /// physical Y). Note the historical alias quirk: X aliases to NORTH,
-    /// Y aliases to WEST.
+    /// The phone sends this code for the button it labels **Y**. The host
+    /// consumes the events through the Gamepad API, whose face-button order is
+    /// the opposite of the uapi aliases; sending 0x133 for the button labelled
+    /// Y is what makes the PC report Y. See `gamepad_button.gd::_send` - the
+    /// cross-over is intentional and must not be "corrected".
+    pub const BTN_NORTH: u16 = 0x133;
+    /// West face button. The uapi aliases `BTN_Y = BTN_WEST`, so 0x134 is
+    /// named after **Y**.
+    ///
+    /// The phone sends this code for the button it labels **X**; see the note
+    /// on [`BTN_NORTH`] for why the labels and codes are crossed over.
     pub const BTN_WEST: u16 = 0x134;
     /// Left bumper (LB).
     pub const BTN_TL: u16 = 0x136;
