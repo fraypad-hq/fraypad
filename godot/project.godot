@@ -33,5 +33,12 @@ pointing/emulate_mouse_from_touch=false
 [rendering]
 
 rendering_device/driver.windows="d3d12"
+; Use the GL Compatibility renderer on every platform, including the
+; `mobile` (Android) override. The pad is a flat 2D UI with no 3D, and the
+; mobile override has to be set explicitly: with only the base key present,
+; an Android export resolves to the Vulkan "mobile" backend, whose touch
+; dispatch path segfaults on some drivers (Mali-G615) as soon as a finger
+; lands on the screen.
 renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true

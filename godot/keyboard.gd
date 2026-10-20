@@ -36,7 +36,6 @@ var _client: FraypadClient
 
 
 func _ready() -> void:
-	_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
 	var layout := VBoxContainer.new()
 	layout.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layout.add_theme_constant_override("separation", 6)
@@ -66,9 +65,20 @@ func _build_row(keys: Array) -> HBoxContainer:
 	return row
 
 
+## The signal client, fetched on first use and cached.
+##
+## Avoids resolving it in `_ready`, where the GDExtension class may still be
+## unregistered and the cast would yield null for the rest of the session.
+func _get_client() -> FraypadClient:
+	if _client == null:
+		_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+	return _client
+
+
 func _send(code: int, pressed: bool) -> void:
-	if _client:
-		_client.send_key(code, pressed)
+	var client := _get_client()
+	if client:
+		client.send_key(code, pressed)
 
 
 ## Releasing keys on focus loss avoids a modifier being held forever if the
@@ -76,7 +86,8 @@ func _send(code: int, pressed: bool) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED \
 			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		var client := _get_client()
 		for row in ROWS:
 			for entry in row:
-				if _client:
-					_client.send_key(entry[1], false)
+				if client:
+					client.send_key(entry[1], false)

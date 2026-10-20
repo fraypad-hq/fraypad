@@ -33,7 +33,16 @@ var _multi: bool = false
 
 func _ready() -> void:
 	custom_minimum_size = Vector2(320, 200)
-	_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+
+
+## The signal client, fetched on first use and cached.
+##
+## Avoids resolving it in `_ready`, where the GDExtension class may still be
+## unregistered and the cast would yield null for the rest of the session.
+func _get_client() -> FraypadClient:
+	if _client == null:
+		_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+	return _client
 
 
 ## Backgrounding the app cancels the touch stream; forget every finger so a
@@ -91,9 +100,10 @@ func _drag(index: int, pos: Vector2) -> void:
 
 	if _touches.size() >= 2:
 		# Two fingers scroll: vertical finger travel becomes wheel clicks.
-		if _client:
+		var client := _get_client()
+		if client:
 			# Wheel positive is up, so invert the screen-space Y delta.
-			_client.send_scroll(int(-delta.y * scroll_sensitivity), 0)
+			client.send_scroll(int(-delta.y * scroll_sensitivity), 0)
 		return
 
 	if index != _primary:
@@ -102,15 +112,18 @@ func _drag(index: int, pos: Vector2) -> void:
 	_primary_travel += delta.length()
 	if not _dragging and _primary_travel > tap_max_travel:
 		_dragging = true
-	if _dragging and _client:
-		_client.send_mouse_move(int(delta.x * sensitivity), int(delta.y * sensitivity))
+	if _dragging:
+		var client := _get_client()
+		if client:
+			client.send_mouse_move(int(delta.x * sensitivity), int(delta.y * sensitivity))
 
 
 ## A quick, near-stationary press-release is a tap. With one finger it is a
 ## left click; the caller maps two-finger taps to right click before we get
 ## here (a two-finger gesture never reaches this path).
 func _maybe_tap(_pos: Vector2) -> void:
+	var client := _get_client()
 	var elapsed := Time.get_ticks_msec() / 1000.0 - _primary_time
-	if _primary_travel <= tap_max_travel and elapsed <= tap_max_seconds and _client:
-		_client.send_mouse_button(0x110, true)
-		_client.send_mouse_button(0x110, false)
+	if _primary_travel <= tap_max_travel and elapsed <= tap_max_seconds and client:
+		client.send_mouse_button(0x110, true)
+		client.send_mouse_button(0x110, false)

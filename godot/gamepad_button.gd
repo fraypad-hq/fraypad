@@ -19,6 +19,9 @@ var _right_stick: FraypadStick
 
 # Maps touch_index -> bool (is this finger currently inside this button?)
 var _fingers: Dictionary = {}
+# Maps touch_index -> Vector2 where that finger first went down. Used to tell
+# whether a finger began on a stick (and so belongs to the stick, not us).
+var _press_origin: Dictionary = {}
 var _is_active: bool = false
 
 # Sentinel for mouse input on desktop
@@ -28,9 +31,12 @@ func _ready() -> void:
 	focus_mode = Control.FOCUS_NONE
 	# Resolve siblings by unique name; the whole tree lookup would also match
 	# unrelated nodes if the scene ever grew a second client or stick.
-	_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
 	_left_stick = get_node_or_null("%LeftStick") as FraypadStick
 	_right_stick = get_node_or_null("%RightStick") as FraypadStick
+
+	# The client is looked up lazily (see `_get_client`) rather than here: the
+	# GDExtension class can still be unregistered while this node readies, and
+	# the `as FraypadClient` cast would quietly yield null for the whole run.
 
 	# Register D-pad buttons into groups for axis conflict resolution
 	match action:
@@ -48,10 +54,24 @@ func _notification(what: int) -> void:
 		if _fingers.is_empty():
 			return
 		_fingers.clear()
+		_press_origin.clear()
 		if _is_active:
 			_is_active = false
 			_update_visual()
 			_send_dpad_aware(false)
+
+## The signal client, fetched on first use and cached.
+##
+## Resolving it in `_ready` proved unreliable on Android: the GDExtension class
+## isn't always registered while sibling nodes are readying, so the cast
+## returned null and every send logged "cannot call method on a null value"
+## for the rest of the session. Looking it up when the first input arrives
+## sidesteps the ordering entirely.
+func _get_client() -> FraypadClient:
+	if _client == null:
+		_client = get_tree().get_first_node_in_group("fraypad_client") as FraypadClient
+	return _client
+
 
 func _is_joystick_finger(index: int) -> bool:
 	if _left_stick and _left_stick._touch_index == index:
@@ -86,29 +106,38 @@ func _input(event: InputEvent) -> void:
 		# A fresh touch inside a stick belongs to the stick, not to us.
 		if event.pressed and _is_over_stick(global_pos):
 			return
-		# Press must land in the exact rect (a grown press band would light up
-		# flush neighbours); the margin below only forgives drift while held.
-		# Only fingers that press inside get a key, so a finger that started
-		# elsewhere can never drag-activate us later.
 		if event.pressed:
-			if get_global_rect().has_point(global_pos):
-				_fingers[index] = true
+			# Remember where this finger went down. A finger that starts on a
+			# stick is excluded above; every other finger is a candidate for
+			# slide-to-type, so it is tracked even when it goes down on empty
+			# space (that is how a swipe *onto* a button starts).
+			_press_origin[index] = global_pos
+			_fingers[index] = get_global_rect().has_point(global_pos)
 		else:
 			_fingers.erase(index)
+			_press_origin.erase(index)
 
 	elif event is InputEventScreenDrag:
 		index = event.index
 		global_pos = event.position
 		is_touch_event = true
+		# A finger holding a stick is a stick finger: it must never light up a
+		# button it happens to slide across, and if it somehow pressed here
+		# before grabbing the stick, drop it.
 		if _is_joystick_finger(index):
 			if _fingers.has(index):
 				_fingers.erase(index)
 			else:
 				return
+		elif _is_over_stick(_press_origin.get(index, global_pos)):
+			# The finger started on a stick (the stick claims it a frame later,
+			# so `_is_joystick_finger` can lag) — leave it to the stick.
+			return
 		else:
-			# Only a finger that pressed on us keeps controlling us; a finger
-			# with no key never pressed on us, so sliding across the pad must
-			# not light us up (and must not create a key we'd later trust).
+			# Slide-to-type: a free finger presses whatever button it is over
+			# right now, so dragging across A -> B -> A -> B types them in turn.
+			# The rect is only grown by a hair; a bigger band would light up
+			# flush neighbours as the finger crosses the seam between them.
 			if not _fingers.has(index):
 				return
 			_fingers[index] = get_global_rect().grow(overlap_margin).has_point(global_pos)
@@ -117,12 +146,12 @@ func _input(event: InputEvent) -> void:
 		index = MOUSE_TOUCH_INDEX
 		global_pos = event.global_position
 		is_touch_event = true
-		# Mirror the touch branch: only a press that lands inside gets a key.
 		if event.pressed:
-			if get_global_rect().has_point(global_pos):
-				_fingers[index] = true
+			_press_origin[index] = global_pos
+			_fingers[index] = get_global_rect().has_point(global_pos)
 		else:
 			_fingers.erase(index)
+			_press_origin.erase(index)
 
 	elif event is InputEventMouseMotion:
 		if not _fingers.has(MOUSE_TOUCH_INDEX):
@@ -147,23 +176,31 @@ func _input(event: InputEvent) -> void:
 		_update_visual()
 		_send_dpad_aware(_is_active)
 
-## Brighten the button while it is held. The base colour comes from the scene
-## (Xbox face buttons are tinted), so this multiplies rather than replaces.
+## Dim the button slightly while it is held. The base colour comes from the
+## scene (Xbox face buttons are tinted), so this multiplies rather than
+## replaces; the pressed tint stays a visible shift for every base colour.
+##
+## Modulate components stay inside 0..1: values above 1 ask the renderer for an
+## overbright/HDR blend, which the GL Compatibility backend handles differently
+## from the desktop Vulkan renderer.
 func _update_visual() -> void:
-	modulate = Color(1.7, 1.7, 1.7) if _is_active else Color.WHITE
+	modulate = Color(0.55, 0.6, 0.7) if _is_active else Color.WHITE
 
 func _send_dpad_aware(p_pressed: bool) -> void:
+	var client := _get_client()
+	if client == null:
+		return
 	match action:
 		Action.DPAD_UP, Action.DPAD_DOWN:
 			if p_pressed:
-				_client.send_dpad_y(-1 if action == Action.DPAD_UP else 1)
+				client.send_dpad_y(-1 if action == Action.DPAD_UP else 1)
 			else:
-				_client.send_dpad_y(_surviving_direction("dpad_y", Action.DPAD_UP, Action.DPAD_DOWN))
+				client.send_dpad_y(_surviving_direction("dpad_y", Action.DPAD_UP, Action.DPAD_DOWN))
 		Action.DPAD_LEFT, Action.DPAD_RIGHT:
 			if p_pressed:
-				_client.send_dpad_x(-1 if action == Action.DPAD_LEFT else 1)
+				client.send_dpad_x(-1 if action == Action.DPAD_LEFT else 1)
 			else:
-				_client.send_dpad_x(_surviving_direction("dpad_x", Action.DPAD_LEFT, Action.DPAD_RIGHT))
+				client.send_dpad_x(_surviving_direction("dpad_x", Action.DPAD_LEFT, Action.DPAD_RIGHT))
 		_:
 			_send(p_pressed)
 
@@ -178,18 +215,21 @@ func _surviving_direction(group: String, neg_action: Action, pos_action: Action)
 	return 0
 
 func _send(p_pressed: bool) -> void:
+	var client := _get_client()
+	if client == null:
+		return
 	match action:
-		Action.FACE_A:        _client.send_button(0x130, p_pressed)
-		Action.FACE_B:        _client.send_button(0x131, p_pressed)
-		Action.FACE_X:        _client.send_button(0x133, p_pressed)
-		Action.FACE_Y:        _client.send_button(0x134, p_pressed)
+		Action.FACE_A:        client.send_button(0x130, p_pressed)
+		Action.FACE_B:        client.send_button(0x131, p_pressed)
+		Action.FACE_X:        client.send_button(0x133, p_pressed)
+		Action.FACE_Y:        client.send_button(0x134, p_pressed)
 		
-		Action.BUMPER_LEFT:   _client.send_button(0x136, p_pressed)
-		Action.BUMPER_RIGHT:  _client.send_button(0x137, p_pressed)
+		Action.BUMPER_LEFT:   client.send_button(0x136, p_pressed)
+		Action.BUMPER_RIGHT:  client.send_button(0x137, p_pressed)
 		
-		Action.TRIGGER_LEFT:  _client.send_trigger_left(1.0 if p_pressed else 0.0)
-		Action.TRIGGER_RIGHT: _client.send_trigger_right(1.0 if p_pressed else 0.0)
+		Action.TRIGGER_LEFT:  client.send_trigger_left(1.0 if p_pressed else 0.0)
+		Action.TRIGGER_RIGHT: client.send_trigger_right(1.0 if p_pressed else 0.0)
 		
-		Action.BACK:          _client.send_button(0x13A, p_pressed)
-		Action.START:         _client.send_button(0x13B, p_pressed)
-		Action.XBOX:          _client.send_button(0x13C, p_pressed)
+		Action.BACK:          client.send_button(0x13A, p_pressed)
+		Action.START:         client.send_button(0x13B, p_pressed)
+		Action.XBOX:          client.send_button(0x13C, p_pressed)
