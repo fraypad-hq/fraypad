@@ -38,7 +38,10 @@ func _on_disconnected() -> void:
 
 func _on_rumble(strong: int, weak: int, duration_ms: int) -> void:
 	# Scale the 0-65535 magnitudes down to the 0..1 range Android expects and
-	# vibrate the handheld for the requested duration.
+	# vibrate the handheld for the requested duration. A zeroed rumble is the
+	# game stopping an effect: cancel whatever is still vibrating.
 	var magnitude := clampf(maxf(strong, weak) / 65535.0, 0.0, 1.0)
 	if magnitude > 0.0 and duration_ms > 0:
 		Input.vibrate_handheld(int(duration_ms * magnitude), magnitude)
+	else:
+		Input.cancel_vibration()

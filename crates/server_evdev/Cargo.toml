@@ -16,3 +16,4 @@ fraypad_protocol = { workspace = true }
 fraypad_server_core = { workspace = true }
 bytemuck = { workspace = true }
 anyhow = { workspace = true }
+nix = { version = "0.29", features = ["fs"] }

@@ -9,13 +9,16 @@
 //! send. A native Windows driver would implement the same [`Backend`] trait
 //! with none of this loop changed.
 
+use std::collections::{HashMap, VecDeque};
 use std::net::UdpSocket;
+use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 use evdev::{
-    AbsInfo, AbsoluteAxisCode, AttributeSet, FFEffectCode, InputEvent, KeyCode, RelativeAxisCode,
-    UinputAbsSetup, uinput::VirtualDevice,
+    AbsInfo, AbsoluteAxisCode, AttributeSet, EventSummary, FFEffectCode, FFEffectKind, InputEvent,
+    KeyCode, RelativeAxisCode, UInputCode, UinputAbsSetup, uinput::VirtualDevice,
 };
+use nix::fcntl::{F_SETFL, OFlag, fcntl};
 
 use anyhow::{Context, Result};
 use fraypad_protocol::codes;
@@ -228,6 +231,23 @@ fn build_mouseboard() -> Result<VirtualDevice> {
         .context("Failed to build virtual mouseboard. Do you have uinput permissions?")
 }
 
+/// A force-feedback effect uploaded by a game, remembered so we can map
+/// later play/stop events back to rumble magnitudes.
+#[derive(Clone, Copy)]
+struct FfEffect {
+    strong: u16,
+    weak: u16,
+    length_ms: u16,
+}
+
+/// Per-pad force-feedback state: effects uploaded by the game, keyed by the
+/// effect id the kernel assigned, plus rumbles waiting to be sent.
+#[derive(Default)]
+struct FfTable {
+    effects: HashMap<u16, FfEffect>,
+    pending: VecDeque<Rumble>,
+}
+
 /// The set of button codes that make up a gamepad's neutral (all-released)
 /// state.
 const NEUTRAL_KEYS: &[u16] = &[
@@ -279,6 +299,7 @@ fn neutral_events() -> Vec<InputEvent> {
 /// created eagerly (cheap, and shared across players).
 struct EvdevBackend {
     pads: [Option<VirtualDevice>; fraypad_server_core::MAX_PLAYERS],
+    ff: [FfTable; fraypad_server_core::MAX_PLAYERS],
     mouseboard: VirtualDevice,
 }
 
@@ -288,8 +309,79 @@ impl EvdevBackend {
         println!("Mouseboard created.");
         Ok(Self {
             pads: [None, None, None, None],
+            ff: Default::default(),
             mouseboard,
         })
+    }
+
+    /// Poll force-feedback events (upload/play/erase) from every live pad.
+    /// Called every server-loop iteration; pads are non-blocking so this is a
+    /// no-op when nothing happened.
+    fn drain_ff(&mut self) {
+        let Self { pads, ff, .. } = self;
+        for slot in 0..fraypad_server_core::MAX_PLAYERS {
+            let Some(device) = pads[slot].as_mut() else { continue };
+            let table = &mut ff[slot];
+
+            // Collect first: the fetch_events iterator borrows the device,
+            // and processing needs it back.
+            let events: Vec<InputEvent> = match device.fetch_events() {
+                Ok(iter) => iter.collect(),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => {
+                    eprintln!("FF read error on player {} pad: {e}", slot + 1);
+                    continue;
+                }
+            };
+
+            for ev in events {
+                match EventSummary::from(ev) {
+                    EventSummary::UInput(uev, UInputCode::UI_FF_UPLOAD, _) => {
+                        // Dropping the upload event commits it (retval 0).
+                        if let Ok(upload) = device.process_ff_upload(uev)
+                            && upload.effect_id() >= 0
+                            && let FFEffectKind::Rumble {
+                                strong_magnitude,
+                                weak_magnitude,
+                            } = upload.effect().kind
+                        {
+                            table.effects.insert(
+                                upload.effect_id() as u16,
+                                FfEffect {
+                                    strong: strong_magnitude,
+                                    weak: weak_magnitude,
+                                    length_ms: upload.effect().replay.length,
+                                },
+                            );
+                        }
+                    }
+                    EventSummary::UInput(uev, UInputCode::UI_FF_ERASE, _) => {
+                        if let Ok(erase) = device.process_ff_erase(uev) {
+                            table.effects.remove(&(erase.effect_id() as u16));
+                        }
+                    }
+                    // Play (value > 0) or stop (value 0) of an uploaded effect;
+                    // the event code carries the effect id.
+                    EventSummary::ForceFeedback(_, code, value) => {
+                        let id = code.0;
+                        if value == 0 {
+                            table.pending.push_back(Rumble {
+                                strong: 0,
+                                weak: 0,
+                                duration_ms: 0,
+                            });
+                        } else if let Some(effect) = table.effects.get(&id) {
+                            table.pending.push_back(Rumble {
+                                strong: effect.strong,
+                                weak: effect.weak,
+                                duration_ms: u32::from(effect.length_ms),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
@@ -297,7 +389,14 @@ impl Backend for EvdevBackend {
     fn create_pad(&mut self, slot: usize) {
         match build_gamepad(slot) {
             Ok(device) => {
+                // Non-blocking so drain_ff() can poll for FF events inline
+                // without stalling the server loop.
+                let flags = fcntl(device.as_raw_fd(), F_SETFL(OFlag::O_NONBLOCK));
+                if let Err(e) = flags {
+                    eprintln!("Failed to set player {} pad non-blocking: {e}", slot + 1);
+                }
                 self.pads[slot] = Some(device);
+                self.ff[slot] = FfTable::default();
                 println!("Player {} pad created.", slot + 1);
             }
             Err(e) => eprintln!("Failed to create pad for player {}: {e}", slot + 1),
@@ -307,6 +406,7 @@ impl Backend for EvdevBackend {
     fn destroy_pad(&mut self, slot: usize) {
         // Dropping the VirtualDevice destroys the uinput node.
         if self.pads[slot].take().is_some() {
+            self.ff[slot] = FfTable::default();
             println!("Player {} pad destroyed.", slot + 1);
         }
     }
@@ -335,11 +435,8 @@ impl Backend for EvdevBackend {
         }
     }
 
-    fn poll_rumble(&mut self, _slot: usize) -> Vec<Rumble> {
-        // Force-feedback reading is wired up in a later milestone; the device
-        // already advertises FF_RUMBLE so games can send effects once the
-        // reader lands.
-        Vec::new()
+    fn poll_rumble(&mut self, slot: usize) -> Vec<Rumble> {
+        self.ff[slot].pending.drain(..).collect()
     }
 }
 
@@ -378,6 +475,10 @@ impl FraypadServer {
         let mut last_housekeep = Instant::now();
 
         loop {
+            // Process FF events before reading the next datagram: effect
+            // uploads must be acked promptly or the game blocks.
+            self.core.backend_mut().drain_ff();
+
             match self.socket.recv_from(&mut buf) {
                 Ok((len, src_addr)) => {
                     let replies = self.core.handle_datagram(&buf[..len], src_addr, Instant::now());
