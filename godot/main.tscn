@@ -3,6 +3,8 @@
 [ext_resource type="Script" path="res://main.gd" id="1"]
 [ext_resource type="Script" path="res://joystick.gd" id="2"]
 [ext_resource type="Script" path="res://gamepad_button.gd" id="2_h2yge"]
+[ext_resource type="Script" path="res://trackpad.gd" id="3"]
+[ext_resource type="Script" path="res://keyboard.gd" id="4"]
 
 [node name="Main" type="Control" unique_id=313986511]
 layout_mode = 3
@@ -17,9 +19,21 @@ script = ExtResource("1")
 unique_name_in_owner = true
 groups=["fraypad_client"]
 
+; ── Gamepad controls live under one container so KBM mode can hide them ──
+
+[node name="GamepadView" type="Control" parent="." unique_id=981234099]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
 ; ── Top row: Triggers & Bumpers ──────────────────────────────────────────────
 
-[node name="LT" type="Button" parent="." unique_id=487049857]
+[node name="LT" type="Button" parent="GamepadView" unique_id=487049857]
 unique_name_in_owner = true
 layout_mode = 0
 offset_left = 16.0
@@ -31,7 +45,7 @@ text = "LT"
 script = ExtResource("2_h2yge")
 action = 11
 
-[node name="LB" type="Button" parent="." unique_id=1804148356]
+[node name="LB" type="Button" parent="GamepadView" unique_id=1804148356]
 unique_name_in_owner = true
 layout_mode = 0
 offset_left = 148.0
@@ -43,7 +57,7 @@ text = "LB"
 script = ExtResource("2_h2yge")
 action = 9
 
-[node name="RB" type="Button" parent="." unique_id=1665525969]
+[node name="RB" type="Button" parent="GamepadView" unique_id=1665525969]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -57,7 +71,7 @@ text = "RB"
 script = ExtResource("2_h2yge")
 action = 10
 
-[node name="RT" type="Button" parent="." unique_id=646887798]
+[node name="RT" type="Button" parent="GamepadView" unique_id=646887798]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -73,7 +87,7 @@ action = 12
 
 ; ── Top center: Menu buttons ──────────────────────────────────────────────────
 
-[node name="Back" type="Button" parent="." unique_id=1385007388]
+[node name="Back" type="Button" parent="GamepadView" unique_id=1385007388]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 0.5
@@ -87,7 +101,7 @@ text = "Back"
 script = ExtResource("2_h2yge")
 action = 13
 
-[node name="Xbox" type="Button" parent="." unique_id=765063464]
+[node name="Xbox" type="Button" parent="GamepadView" unique_id=765063464]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 0.5
@@ -101,7 +115,7 @@ text = "⊕"
 script = ExtResource("2_h2yge")
 action = 15
 
-[node name="Start" type="Button" parent="." unique_id=1832926960]
+[node name="Start" type="Button" parent="GamepadView" unique_id=1832926960]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 0.5
@@ -117,7 +131,7 @@ action = 14
 
 ; ── Left side: Stick + D-Pad ─────────────────────────────────────────────────
 
-[node name="LeftStick" type="Control" parent="." unique_id=324231012]
+[node name="LeftStick" type="Control" parent="GamepadView" unique_id=324231012]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 0.0
@@ -131,7 +145,7 @@ offset_bottom = -170.0
 script = ExtResource("2")
 
 ; D-Pad: flush cross — zero gaps between adjacent buttons
-[node name="DUp" type="Button" parent="." unique_id=348698879]
+[node name="DUp" type="Button" parent="GamepadView" unique_id=348698879]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_top = 1.0
@@ -145,7 +159,7 @@ text = "▲"
 script = ExtResource("2_h2yge")
 action = 1
 
-[node name="DLeft" type="Button" parent="." unique_id=834893489]
+[node name="DLeft" type="Button" parent="GamepadView" unique_id=834893489]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_top = 1.0
@@ -159,7 +173,7 @@ text = "◄"
 script = ExtResource("2_h2yge")
 action = 3
 
-[node name="DDown" type="Button" parent="." unique_id=1579237579]
+[node name="DDown" type="Button" parent="GamepadView" unique_id=1579237579]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_top = 1.0
@@ -173,7 +187,7 @@ text = "▼"
 script = ExtResource("2_h2yge")
 action = 2
 
-[node name="DRight" type="Button" parent="." unique_id=44271283]
+[node name="DRight" type="Button" parent="GamepadView" unique_id=44271283]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_top = 1.0
@@ -189,7 +203,7 @@ action = 4
 
 ; ── Right side: Face buttons + Right Stick ───────────────────────────────────
 
-[node name="BtnY" type="Button" parent="." unique_id=1858767551]
+[node name="BtnY" type="Button" parent="GamepadView" unique_id=1858767551]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -205,7 +219,7 @@ text = "Y"
 script = ExtResource("2_h2yge")
 action = 8
 
-[node name="BtnX" type="Button" parent="." unique_id=2053322364]
+[node name="BtnX" type="Button" parent="GamepadView" unique_id=2053322364]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -221,7 +235,7 @@ text = "X"
 script = ExtResource("2_h2yge")
 action = 7
 
-[node name="BtnA" type="Button" parent="." unique_id=524088438]
+[node name="BtnA" type="Button" parent="GamepadView" unique_id=524088438]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -237,7 +251,7 @@ text = "A"
 script = ExtResource("2_h2yge")
 action = 5
 
-[node name="BtnB" type="Button" parent="." unique_id=2059438177]
+[node name="BtnB" type="Button" parent="GamepadView" unique_id=2059438177]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -253,7 +267,7 @@ text = "B"
 script = ExtResource("2_h2yge")
 action = 6
 
-[node name="RightStick" type="Control" parent="." unique_id=2062199595]
+[node name="RightStick" type="Control" parent="GamepadView" unique_id=2062199595]
 unique_name_in_owner = true
 layout_mode = 0
 anchor_left = 1.0
@@ -367,3 +381,57 @@ offset_right = 500.0
 offset_bottom = 172.0
 theme_override_font_sizes/font_size = 18
 text = "Disconnect"
+
+; ── Mode switch: Gamepad <-> Keyboard & Mouse ────────────────────────────────
+
+[node name="ModeButton" type="Button" parent="." unique_id=981234010]
+unique_name_in_owner = true
+layout_mode = 0
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -70.0
+offset_top = 150.0
+offset_right = -16.0
+offset_bottom = 206.0
+theme_override_font_sizes/font_size = 18
+text = "⌨"
+tooltip_text = "Switch between gamepad and keyboard/mouse"
+
+; Hidden until the mode button is pressed; covers the whole screen so the
+; gamepad controls underneath never receive touches while active.
+[node name="KBMView" type="Control" parent="." unique_id=981234011]
+unique_name_in_owner = true
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 0
+
+[node name="Trackpad" type="Control" parent="KBMView" unique_id=981234012]
+unique_name_in_owner = true
+layout_mode = 0
+anchor_left = 0.0
+anchor_top = 0.0
+anchor_right = 0.34
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = -12.0
+script = ExtResource("3")
+
+[node name="Keyboard" type="Control" parent="KBMView" unique_id=981234013]
+unique_name_in_owner = true
+layout_mode = 0
+anchor_left = 0.34
+anchor_top = 0.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = -12.0
+script = ExtResource("4")

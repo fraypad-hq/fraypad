@@ -23,6 +23,10 @@ func _ready() -> void:
 	%RetryButton.pressed.connect(_reconnect)
 	%DisconnectButton.pressed.connect(_disconnect)
 
+	# ── Mode switch ──────────────────────────────────────────────────
+	%ModeButton.pressed.connect(_toggle_mode)
+	%KBMView.visible = false
+
 	# ── Sticks ───────────────────────────────────────────────────────
 	%LeftStick.value_changed.connect(func(v: Vector2): client.send_stick_left(v.x, v.y))
 	%RightStick.value_changed.connect(func(v: Vector2): client.send_stick_right(v.x, v.y))
@@ -58,6 +62,48 @@ func _save_config() -> void:
 
 func _toggle_settings() -> void:
 	%SettingsPanel.visible = not %SettingsPanel.visible
+
+
+## Swap between the gamepad controls and the keyboard/mouse surface.
+##
+## Before hiding a side we release what it might be holding: a stick left
+## deflected or a key left down would otherwise stay that way on the PC,
+## because the release touch lands on a control that is no longer visible.
+func _toggle_mode() -> void:
+	var to_kbm: bool = not %KBMView.visible
+	if to_kbm:
+		_release_gamepad()
+	%GamepadView.visible = not to_kbm
+	%KBMView.visible = to_kbm
+	%ModeButton.text = "🎮" if to_kbm else "⌨"
+
+
+## Recenter both sticks and let every button drop whatever it is holding, so
+## the PC sees a neutral pad.
+func _release_gamepad() -> void:
+	client.send_stick_left(0.0, 0.0)
+	client.send_stick_right(0.0, 0.0)
+	for node in get_tree().get_nodes_in_group("dpad_x"):
+		node._fingers.clear()
+		if node._is_active:
+			node._is_active = false
+			node._update_visual()
+			node._send_dpad_aware(false)
+	for node in get_tree().get_nodes_in_group("dpad_y"):
+		node._fingers.clear()
+		if node._is_active:
+			node._is_active = false
+			node._update_visual()
+			node._send_dpad_aware(false)
+	# Face/menu/bumper/trigger buttons are GamepadButtons not in a d-pad group.
+	for node in %GamepadView.get_children():
+		if node is GamepadButton and not node.is_in_group("dpad_x") \
+				and not node.is_in_group("dpad_y"):
+			node._fingers.clear()
+			if node._is_active:
+				node._is_active = false
+				node._update_visual()
+				node._send(false)
 
 
 func _save_settings() -> void:

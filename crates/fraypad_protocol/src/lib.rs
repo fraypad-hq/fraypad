@@ -239,6 +239,82 @@ pub mod codes {
     pub const BTN_RIGHT: u16 = 0x111;
     /// Middle mouse button.
     pub const BTN_MIDDLE: u16 = 0x112;
+
+    // ── Keyboard keys (EV_KEY, kbm-routed) ───────────────────────────────
+    //
+    // Note these are evdev *key* codes (not ASCII): `KEY_A = 30` is the
+    // physical A key in the US layout, so shifted symbols share their base
+    // key's code (Shift+2 sends `KEY_2`).
+    /// `A` .. `Z` are laid out contiguously starting at 30.
+    pub const KEY_A: u16 = 30;
+    /// See [`Self::KEY_A`].
+    pub const KEY_Z: u16 = 44;
+    /// `1` .. `9` then `0` are contiguous starting at 2.
+    pub const KEY_1: u16 = 2;
+    /// See [`Self::KEY_1`].
+    pub const KEY_0: u16 = 11;
+    /// Escape.
+    pub const KEY_ESC: u16 = 1;
+    /// Tab.
+    pub const KEY_TAB: u16 = 15;
+    /// Caps lock.
+    pub const KEY_CAPSLOCK: u16 = 58;
+    /// Enter / return.
+    pub const KEY_ENTER: u16 = 28;
+    /// Backspace.
+    pub const KEY_BACKSPACE: u16 = 14;
+    /// Space.
+    pub const KEY_SPACE: u16 = 57;
+    /// Minus / underscore.
+    pub const KEY_MINUS: u16 = 12;
+    /// Equal / plus.
+    pub const KEY_EQUAL: u16 = 13;
+    /// Left bracket / brace.
+    pub const KEY_LEFTBRACE: u16 = 26;
+    /// Right bracket / brace.
+    pub const KEY_RIGHTBRACE: u16 = 27;
+    /// Backslash / pipe.
+    pub const KEY_BACKSLASH: u16 = 43;
+    /// Semicolon / colon.
+    pub const KEY_SEMICOLON: u16 = 39;
+    /// Apostrophe / quote.
+    pub const KEY_APOSTROPHE: u16 = 40;
+    /// Backtick / tilde.
+    pub const KEY_GRAVE: u16 = 41;
+    /// Comma / less-than.
+    pub const KEY_COMMA: u16 = 51;
+    /// Dot / greater-than.
+    pub const KEY_DOT: u16 = 52;
+    /// Slash / question mark.
+    pub const KEY_SLASH: u16 = 53;
+    /// Left shift.
+    pub const KEY_LEFTSHIFT: u16 = 42;
+    /// Right shift.
+    pub const KEY_RIGHTSHIFT: u16 = 54;
+    /// Left control.
+    pub const KEY_LEFTCTRL: u16 = 29;
+    /// Left alt.
+    pub const KEY_LEFTALT: u16 = 56;
+    /// Left super / meta.
+    pub const KEY_LEFTMETA: u16 = 125;
+    /// Up arrow.
+    pub const KEY_UP: u16 = 103;
+    /// Down arrow.
+    pub const KEY_DOWN: u16 = 108;
+    /// Left arrow.
+    pub const KEY_LEFT: u16 = 105;
+    /// Right arrow.
+    pub const KEY_RIGHT: u16 = 106;
+    /// Delete (forward delete).
+    pub const KEY_DELETE: u16 = 111;
+    /// Home.
+    pub const KEY_HOME: u16 = 102;
+    /// End.
+    pub const KEY_END: u16 = 107;
+    /// Page up.
+    pub const KEY_PAGEUP: u16 = 104;
+    /// Page down.
+    pub const KEY_PAGEDOWN: u16 = 109;
 }
 
 impl Packet {
@@ -419,6 +495,26 @@ mod tests {
         let pad = Packet::input(1, 2, codes::EV_ABS, codes::ABS_Y, 5);
         assert!(!codes::is_kbm(pad.event_type));
         assert_eq!(codes::event_type(pad.event_type), codes::EV_ABS);
+    }
+
+    #[test]
+    fn keyboard_codes_match_the_evdev_uapi() {
+        // Pinning a representative sample catches a typo in the key table,
+        // which would otherwise send the wrong character to the PC.
+        assert_eq!(codes::KEY_A, 30);
+        assert_eq!(codes::KEY_Z, 44);
+        assert_eq!(codes::KEY_1, 2);
+        assert_eq!(codes::KEY_0, 11);
+        assert_eq!(codes::KEY_ENTER, 28);
+        assert_eq!(codes::KEY_BACKSPACE, 14);
+        assert_eq!(codes::KEY_SPACE, 57);
+        assert_eq!(codes::KEY_LEFTSHIFT, 42);
+        assert_eq!(codes::KEY_LEFTCTRL, 29);
+        assert_eq!(codes::KEY_ESC, 1);
+        assert_eq!(codes::KEY_UP, 103);
+        assert_eq!(codes::KEY_LEFT, 105);
+        // Letters are contiguous, which the keyboard layout relies on.
+        assert_eq!(codes::KEY_Z - codes::KEY_A, 14);
     }
 
     #[test]

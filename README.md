@@ -17,11 +17,10 @@ controller, so games see a normal X360 pad.
                                         4× virtual X360 pad + MouseBoard
 ```
 
-Status: early development but usable. The gamepad path, rumble
-(force-feedback from games vibrates the phone), and reliable sessions
-(handshake, heartbeats, eviction, resync) all work end to end.
-Keyboard/mouse mode is the remaining piece. See "Playing" for how to point
-the app at your PC.
+Status: usable. The gamepad path, rumble (force-feedback from games vibrates
+the phone), reliable sessions (handshake, heartbeats, eviction, resync), and a
+keyboard/mouse mode all work end to end. See "Playing" for how to point the app
+at your PC.
 
 ## Repository layout
 
@@ -137,6 +136,20 @@ button, enter your PC's LAN IP and port (e.g. `192.168.1.10:54321`), and hit
 **Save & Connect**. The address is stored on the phone, so you only set it
 once. The status line at the top shows the connection state and offers a retry
 when the server is unreachable.
+
+### Keyboard & mouse
+
+Tap the ⌨ button to swap the whole pad for a keyboard/mouse surface; the button
+becomes 🎮 and swaps back. Switching releases anything the hidden side was
+holding, so nothing sticks on the PC.
+
+The surface is a trackpad on the left and a QWERTY keyboard on the right:
+
+- **Trackpad** — drag to move the cursor, tap to left-click, two-finger drag to
+  scroll. The keyboard covers keys, modifiers, and arrows, so you can type and
+  play with the same screen.
+
+Both modes share the connection, so you can flip mid-game.
 
 ## Protocol
 
