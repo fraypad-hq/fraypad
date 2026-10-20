@@ -44,6 +44,18 @@ func _is_joystick_finger(index: int) -> bool:
 		return true
 	return false
 
+## Whether a touch landed inside either stick's interactive area.
+##
+## `_input()` runs before the stick's `_gui_input()` claims a finger, so on
+## the very first frame of a touch `_touch_index` is still unset. Checking the
+## geometry closes that race, which otherwise made grabbing the right stick
+## fire a spurious face-button press.
+func _is_over_stick(pos: Vector2) -> bool:
+	for stick in [_left_stick, _right_stick]:
+		if stick and stick.get_global_rect().has_point(pos):
+			return true
+	return false
+
 func _input(event: InputEvent) -> void:
 	var index: int = -1
 	var global_pos: Vector2
@@ -54,6 +66,9 @@ func _input(event: InputEvent) -> void:
 		global_pos = event.position
 		is_touch_event = true
 		if _is_joystick_finger(index):
+			return
+		# A fresh touch inside a stick belongs to the stick, not to us.
+		if event.pressed and _is_over_stick(global_pos):
 			return
 		_fingers[index] = get_global_rect().grow(overlap_margin).has_point(global_pos) and event.pressed
 		if not event.pressed:

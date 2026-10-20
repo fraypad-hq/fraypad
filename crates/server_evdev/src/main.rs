@@ -23,6 +23,8 @@ fn build_gamepad(player_num: usize) -> Result<VirtualDevice> {
 
     keys.insert(KeyCode::BTN_TL);
     keys.insert(KeyCode::BTN_TR);
+    keys.insert(KeyCode::BTN_TL2);
+    keys.insert(KeyCode::BTN_TR2);
     keys.insert(KeyCode::BTN_SELECT);
     keys.insert(KeyCode::BTN_START);
     keys.insert(KeyCode::BTN_MODE);
@@ -239,6 +241,10 @@ impl SessionTable {
 
     fn connect(&mut self, src_addr: SocketAddr) -> ConnectOutcome {
         if let Some(slot) = self.clients.iter().position(|c| *c == Some(src_addr)) {
+            // A reconnect starts a fresh sequence so the client's counter
+            // (which also restarts at 0) is not rejected as stale.
+            self.last_gamepad_seq_ids[slot] = 0;
+            self.last_kbm_seq_ids[slot] = 0;
             return ConnectOutcome::Reconnected(slot);
         }
         if let Some(slot) = self.clients.iter().position(|c| c.is_none()) {
@@ -246,6 +252,11 @@ impl SessionTable {
             return ConnectOutcome::Connected(slot);
         }
         ConnectOutcome::Rejected
+    }
+
+    /// Resolve a sender's address to its assigned slot, if any.
+    fn slot_of(&self, src_addr: SocketAddr) -> Option<usize> {
+        self.clients.iter().position(|c| *c == Some(src_addr))
     }
 
     fn disconnect(&mut self, src_addr: SocketAddr) -> Option<usize> {
@@ -308,11 +319,15 @@ impl FraypadServer {
         })
     }
 
-    fn handle_input(&mut self, packet: &InputPacket) {
-        if packet.player_id >= 4 {
+    /// Emit an input event on behalf of a connected client.
+    ///
+    /// The player slot is resolved from the sender's address, never from the
+    /// packet, so a client cannot inject input into another player's pad.
+    /// Packets from unregistered addresses are dropped.
+    fn handle_input(&mut self, packet: &InputPacket, src_addr: SocketAddr) {
+        let Some(player_index) = self.sessions.slot_of(src_addr) else {
             return;
-        }
-        let player_index = packet.player_id as usize;
+        };
 
         let routing_bit = packet.packet_type >> 15;
         let event_type = packet.packet_type & 0x7FFF;
@@ -391,7 +406,7 @@ impl FraypadServer {
             match len {
                 12 => {
                     let packet: &InputPacket = bytemuck::from_bytes(&buf[..12]);
-                    self.handle_input(packet);
+                    self.handle_input(packet, src_addr);
                 }
                 8 => {
                     let packet: &FeedbackPacket = bytemuck::from_bytes(&buf[..8]);
@@ -522,5 +537,34 @@ mod tests {
         s.connect(addr(3));
         s.disconnect(addr(2));
         assert!(matches!(s.connect(addr(4)), ConnectOutcome::Connected(1)));
+    }
+
+    #[test]
+    fn slot_of_resolves_registered_addr() {
+        let mut s = SessionTable::new();
+        s.connect(addr(1));
+        s.connect(addr(2));
+        assert_eq!(s.slot_of(addr(2)), Some(1));
+        assert_eq!(s.slot_of(addr(1)), Some(0));
+    }
+
+    #[test]
+    fn slot_of_unknown_addr_is_none() {
+        let s = SessionTable::new();
+        assert_eq!(s.slot_of(addr(7)), None);
+    }
+
+    #[test]
+    fn reconnect_resets_seq_ids() {
+        let mut s = SessionTable::new();
+        s.connect(addr(1));
+        s.check_seq(0, 10, false);
+        s.check_seq(0, 20, true);
+        // Same addr reconnects; the client restarts its counter at 0, so the
+        // server must clear its stored seq or everything would be dropped.
+        assert!(matches!(s.connect(addr(1)), ConnectOutcome::Reconnected(0)));
+        assert_eq!(s.last_gamepad_seq_ids[0], 0);
+        assert_eq!(s.last_kbm_seq_ids[0], 0);
+        assert!(s.check_seq(0, 1, false));
     }
 }

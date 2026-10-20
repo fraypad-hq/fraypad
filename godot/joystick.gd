@@ -2,12 +2,29 @@ extends Control
 class_name FraypadStick
 
 signal value_changed(joystick_value: Vector2)
+## Emitted when the stick is tapped rather than dragged. This is the stick
+## click (L3 / R3).
+signal clicked
 
 @export var max_distance: float = 60.0
+
+## Radial deadzone. Inputs with a magnitude below this emit exactly zero so
+## tiny thumb-rest drift never registers as movement. Above it the output is
+## rescaled so the stick still reaches full deflection.
+@export_range(0.0, 0.5, 0.01) var deadzone: float = 0.08
+
+## A press-release inside this travel distance and this time counts as a tap,
+## which fires `clicked` (the stick click, L3 / R3) instead of a drag.
+@export var tap_max_travel: float = 16.0
+@export var tap_max_seconds: float = 0.30
 
 var _touch_index: int = -1
 var _center: Vector2
 var output: Vector2 = Vector2.ZERO
+
+var _press_pos: Vector2 = Vector2.ZERO
+var _press_time: float = 0.0
+var _travelled: float = 0.0
 
 var _bg: Panel
 var _handle: Panel
@@ -61,10 +78,14 @@ func _gui_input(event: InputEvent) -> void:
 
 		if is_pressed and _touch_index == -1:
 			_touch_index = index
+			_press_pos = pos
+			_press_time = Time.get_ticks_msec() / 1000.0
+			_travelled = 0.0
 			_update_joystick(pos)
 		elif not is_pressed and _touch_index == index:
 			_touch_index = -1
 			_update_joystick(_center)
+			_maybe_emit_click()
 			
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		var pos: Vector2
@@ -78,13 +99,31 @@ func _gui_input(event: InputEvent) -> void:
 			index = 0
 			
 		if index != -1 and index == _touch_index:
+			_travelled = maxf(_travelled, pos.distance_to(_press_pos))
 			_update_joystick(pos)
 
 func _update_joystick(pos: Vector2) -> void:
 	var diff = pos - _center
 	if diff.length() > max_distance:
 		diff = diff.normalized() * max_distance
-	output = diff / max_distance
+	output = _apply_deadzone(diff / max_distance)
 	
 	_handle.position = (_center + diff) - Vector2(24, 24)
 	value_changed.emit(output)
+
+## Fire `clicked` if this press-release was a quick tap rather than a drag.
+##
+## Lets a tap on the knob act as the stick click (L3 / R3) without stealing
+## touches the stick needs for aiming.
+func _maybe_emit_click() -> void:
+	var elapsed := Time.get_ticks_msec() / 1000.0 - _press_time
+	if _travelled <= tap_max_travel and elapsed <= tap_max_seconds:
+		clicked.emit()
+
+## Map a raw stick vector through a radial deadzone, rescaling the region
+## outside the deadzone to the full 0..1 range.
+func _apply_deadzone(v: Vector2) -> Vector2:
+	var mag = v.length()
+	if mag < deadzone:
+		return Vector2.ZERO
+	return v * ((mag - deadzone) / (1.0 - deadzone)) / mag
