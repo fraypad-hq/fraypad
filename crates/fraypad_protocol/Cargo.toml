@@ -12,3 +12,6 @@ categories = ["network-programming", "game-development", "hardware-support"]
 
 [dependencies]
 bytemuck = { workspace = true }
+
+[lints]
+workspace = true

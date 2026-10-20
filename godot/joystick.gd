@@ -18,6 +18,10 @@ signal clicked
 @export var tap_max_travel: float = 16.0
 @export var tap_max_seconds: float = 0.30
 
+## Radius (px) around the knob center that counts as "tapping the knob" for
+## L3/R3; the 48 px knob sits in the middle of the 160 px control.
+const KNOB_RADIUS: float = 40.0
+
 var _touch_index: int = -1
 var _center: Vector2
 var output: Vector2 = Vector2.ZERO
@@ -81,7 +85,9 @@ func _gui_input(event: InputEvent) -> void:
 			_press_pos = pos
 			_press_time = Time.get_ticks_msec() / 1000.0
 			_travelled = 0.0
-			_update_joystick(pos)
+			# Deliberately no _update_joystick() here: deflection starts on
+			# the first drag, so landing a finger near the rim doesn't snap
+			# the stick to full throw.
 		elif not is_pressed and _touch_index == index:
 			_touch_index = -1
 			_update_joystick(_center)
@@ -113,10 +119,13 @@ func _update_joystick(pos: Vector2) -> void:
 
 ## Fire `clicked` if this press-release was a quick tap rather than a drag.
 ##
-## Lets a tap on the knob act as the stick click (L3 / R3) without stealing
-## touches the stick needs for aiming.
+## The press must start on the knob itself (~40 px of center), so a tap near
+## the edge of the control area can't fire L3/R3; the short travel/time
+## window keeps aiming gestures from registering as clicks.
 func _maybe_emit_click() -> void:
 	var elapsed := Time.get_ticks_msec() / 1000.0 - _press_time
+	if _press_pos.distance_to(_center) > KNOB_RADIUS:
+		return
 	if _travelled <= tap_max_travel and elapsed <= tap_max_seconds:
 		clicked.emit()
 
@@ -124,6 +133,8 @@ func _maybe_emit_click() -> void:
 ## outside the deadzone to the full 0..1 range.
 func _apply_deadzone(v: Vector2) -> Vector2:
 	var mag = v.length()
-	if mag < deadzone:
+	# The `mag < eps` guard also covers deadzone == 0 with a zero vector
+	# (0/0 -> NaN) if the export is ever set to its minimum.
+	if mag < deadzone or mag < 0.0001:
 		return Vector2.ZERO
 	return v * ((mag - deadzone) / (1.0 - deadzone)) / mag

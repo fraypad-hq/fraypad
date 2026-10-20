@@ -70,8 +70,14 @@ func _input(event: InputEvent) -> void:
 		# A fresh touch inside a stick belongs to the stick, not to us.
 		if event.pressed and _is_over_stick(global_pos):
 			return
-		_fingers[index] = get_global_rect().grow(overlap_margin).has_point(global_pos) and event.pressed
-		if not event.pressed:
+		# Press must land in the exact rect (a grown press band would light up
+		# flush neighbours); the margin below only forgives drift while held.
+		# Only fingers that press inside get a key, so a finger that started
+		# elsewhere can never drag-activate us later.
+		if event.pressed:
+			if get_global_rect().has_point(global_pos):
+				_fingers[index] = true
+		else:
 			_fingers.erase(index)
 
 	elif event is InputEventScreenDrag:
@@ -84,14 +90,22 @@ func _input(event: InputEvent) -> void:
 			else:
 				return
 		else:
+			# Only a finger that pressed on us keeps controlling us; a finger
+			# with no key never pressed on us, so sliding across the pad must
+			# not light us up (and must not create a key we'd later trust).
+			if not _fingers.has(index):
+				return
 			_fingers[index] = get_global_rect().grow(overlap_margin).has_point(global_pos)
 
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		index = MOUSE_TOUCH_INDEX
 		global_pos = event.global_position
 		is_touch_event = true
-		_fingers[index] = get_global_rect().grow(overlap_margin).has_point(global_pos) and event.pressed
-		if not event.pressed:
+		# Mirror the touch branch: only a press that lands inside gets a key.
+		if event.pressed:
+			if get_global_rect().has_point(global_pos):
+				_fingers[index] = true
+		else:
 			_fingers.erase(index)
 
 	elif event is InputEventMouseMotion:
@@ -126,33 +140,31 @@ func _send_dpad_aware(p_pressed: bool) -> void:
 			if p_pressed:
 				_client.send_dpad_y(-1 if action == Action.DPAD_UP else 1)
 			else:
-				var dominated := false
-				for btn in get_tree().get_nodes_in_group("dpad_y"):
-					if btn != self and btn._is_active:
-						dominated = true
-						break
-				if not dominated:
-					_client.send_dpad_y(0)
+				_client.send_dpad_y(_surviving_direction("dpad_y", Action.DPAD_UP, Action.DPAD_DOWN))
 		Action.DPAD_LEFT, Action.DPAD_RIGHT:
 			if p_pressed:
 				_client.send_dpad_x(-1 if action == Action.DPAD_LEFT else 1)
 			else:
-				var dominated := false
-				for btn in get_tree().get_nodes_in_group("dpad_x"):
-					if btn != self and btn._is_active:
-						dominated = true
-						break
-				if not dominated:
-					_client.send_dpad_x(0)
+				_client.send_dpad_x(_surviving_direction("dpad_x", Action.DPAD_LEFT, Action.DPAD_RIGHT))
 		_:
 			_send(p_pressed)
+
+## Value to send when `self` releases one end of a d-pad axis: whichever end
+## is still held keeps its direction, otherwise neutral (0). Sending 0 only
+## when *nothing* is held stops a release from leaving the hat stuck on the
+## direction the dying press overwrote.
+func _surviving_direction(group: String, neg_action: Action, pos_action: Action) -> int:
+	for btn in get_tree().get_nodes_in_group(group):
+		if btn != self and btn._is_active:
+			return -1 if btn.action == neg_action else 1
+	return 0
 
 func _send(p_pressed: bool) -> void:
 	match action:
 		Action.FACE_A:        _client.send_button(0x130, p_pressed)
 		Action.FACE_B:        _client.send_button(0x131, p_pressed)
-		Action.FACE_X:        _client.send_button(0x134, p_pressed)
-		Action.FACE_Y:        _client.send_button(0x133, p_pressed)
+		Action.FACE_X:        _client.send_button(0x133, p_pressed)
+		Action.FACE_Y:        _client.send_button(0x134, p_pressed)
 		
 		Action.BUMPER_LEFT:   _client.send_button(0x136, p_pressed)
 		Action.BUMPER_RIGHT:  _client.send_button(0x137, p_pressed)

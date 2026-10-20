@@ -30,21 +30,25 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ -d "$ANDROID_NDK_HOME" ]] || die "NDK not found at $ANDROID_NDK_HOME — run scripts/setup-android.sh"
-command -v cargo-ndk >/dev/null 2>&1 || [[ -x "$(command -v cargo)" ]] || die "cargo not found"
+command -v cargo-ndk >/dev/null 2>&1 || die "cargo-ndk not found (cargo install cargo-ndk)"
+command -v cargo >/dev/null 2>&1 || die "cargo not found"
+command -v unzip >/dev/null 2>&1 || die "unzip is required to verify the exported APK"
 "$GODOT_BIN" --version >/dev/null 2>&1 || die "godot not found (set GODOT_BIN)"
 
 if [[ "${RELEASE:-0}" == "1" ]]; then
-    PROFILE="--release"
+    PROFILE_ARGS=(--release)
+    PROFILE_DIR="release"
     EXPORT_FLAG="--export-release"
 else
-    PROFILE=""
+    PROFILE_ARGS=()
+    PROFILE_DIR="debug"
     EXPORT_FLAG="--export-debug"
 fi
 
-log "building client_gdext (aarch64-linux-android) $PROFILE"
-(cd "$REPO_ROOT" && cargo ndk -t arm64-v8a build $PROFILE -p client_gdext)
+log "building client_gdext (aarch64-linux-android) $PROFILE_DIR"
+(cd "$REPO_ROOT" && cargo ndk -t arm64-v8a build "${PROFILE_ARGS[@]}" -p client_gdext)
 
-SO_SRC="$REPO_ROOT/target/aarch64-linux-android/release/libclient_gdext.so"
+SO_SRC="$REPO_ROOT/target/aarch64-linux-android/$PROFILE_DIR/libclient_gdext.so"
 [[ -s "$SO_SRC" ]] || die "built .so missing or empty at $SO_SRC"
 
 mkdir -p "$(dirname "$APK_OUT")"
@@ -55,12 +59,10 @@ log "exporting APK -> $APK_OUT"
 
 # Godot packages a 0-byte placeholder when the native lib is absent. Fail loudly.
 log "verifying APK contents"
-if command -v unzip >/dev/null; then
-    so_size="$(unzip -l "$APK_OUT" 'lib/arm64-v8a/libclient_gdext.so' 2>/dev/null \
-        | awk '/libclient_gdext\.so/ {print $1; exit}')"
-    [[ -n "$so_size" && "$so_size" -gt 1000000 ]] \
-        || die "APK is missing a real libclient_gdext.so (reported size: '${so_size:-none}')"
-    log "libclient_gdext.so packaged: $so_size bytes"
-fi
+so_size="$(unzip -l "$APK_OUT" 'lib/arm64-v8a/libclient_gdext.so' 2>/dev/null \
+    | awk '/libclient_gdext\.so/ {print $1; exit}')"
+[[ -n "$so_size" && "$so_size" -gt 1000000 ]] \
+    || die "APK is missing a real libclient_gdext.so (reported size: '${so_size:-none}')"
+log "libclient_gdext.so packaged: $so_size bytes"
 
 log "done: $APK_OUT ($(du -h "$APK_OUT" | cut -f1))"

@@ -32,6 +32,9 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# sdkmanager needs a JDK, so check for one before invoking it at all.
+command -v keytool >/dev/null || die "keytool not found; install a JDK (e.g. openjdk-21-jdk or temurin)"
+
 # ── cmdline-tools ────────────────────────────────────────────────────────────
 SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
 if [[ -x "$SDKMANAGER" ]]; then
@@ -49,6 +52,11 @@ else
     mkdir -p "$SDK_ROOT/cmdline-tools"
     rm -rf "$SDK_ROOT/cmdline-tools/latest"
     mv "$tmp/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+    # Info-ZIP may not restore exec bits; without this every rerun would
+    # re-download because the -x test above keeps failing.
+    find "$SDK_ROOT/cmdline-tools/latest/bin" -type f -exec chmod +x {} +
+    "$SDKMANAGER" --version >/dev/null 2>&1 \
+        || die "cmdline-tools installed but sdkmanager does not run"
 fi
 
 export ANDROID_HOME="$SDK_ROOT"
@@ -57,14 +65,20 @@ export ANDROID_SDK_ROOT="$SDK_ROOT"
 # ── licenses ─────────────────────────────────────────────────────────────────
 log "accepting SDK licenses"
 # sdkmanager exits non-zero on EOF before every license is accepted, so feed it
-# "yes" and retry until the local repository reports them all accepted.
+# "yes" and retry until the local repository reports them all accepted. Probe
+# to a file so `grep -q` closing the pipe can't SIGPIPE sdkmanager into a false
+# negative under pipefail.
+licenses_ok=0
 for _ in 1 2 3 4 5; do
     yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
-    if "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses 2>&1 \
-            | grep -q "All SDK package licenses accepted"; then
+    "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >"$SDK_ROOT/.licenses.log" 2>&1 || true
+    if grep -q "All SDK package licenses accepted" "$SDK_ROOT/.licenses.log"; then
+        licenses_ok=1
         break
     fi
 done
+rm -f "$SDK_ROOT/.licenses.log"
+[[ "$licenses_ok" == "1" ]] || die "could not accept all SDK licenses"
 
 # ── packages ─────────────────────────────────────────────────────────────────
 log "installing platform-tools, platforms;android-$API, build-tools;$BUILD_TOOLS"
@@ -85,7 +99,6 @@ KEYSTORE="$HOME/.android/debug.keystore"
 if [[ -f "$KEYSTORE" ]]; then
     log "debug keystore already present"
 else
-    command -v keytool >/dev/null || die "keytool not found; install a JDK (e.g. jdk21-openjdk)"
     log "generating debug keystore at $KEYSTORE"
     mkdir -p "$HOME/.android"
     keytool -genkeypair \
@@ -113,14 +126,19 @@ else
             command -v curl >/dev/null || die "curl is required"
             mkdir -p "$TPL_DIR"
             tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+            # Godot tags releases with a dash ("4.7.2-stable"), while the
+            # version string the binary prints uses a dot ("4.7.2.stable").
+            tag="${version/.stable/-stable}"
             curl -fL -o "$tmp/templates.tpz" \
-                "https://github.com/godotengine/godot/releases/download/${version}/Godot_v${version}_export_templates.tpz"
+                "https://github.com/godotengine/godot/releases/download/${tag}/Godot_v${tag}_export_templates.tpz"
             # The tpz is a zip; we only need the two Android APKs.
             unzip -q -o -j "$tmp/templates.tpz" \
                 "templates/android_debug.apk" \
                 "templates/android_release.apk" \
                 "templates/version.txt" -d "$TPL_DIR"
             rm -rf "$tmp"
+            trap - EXIT
             log "export templates installed to $TPL_DIR"
         fi
     fi
@@ -128,11 +146,12 @@ fi
 
 # ── summary ──────────────────────────────────────────────────────────────────
 log "done. Android SDK root: $SDK_ROOT"
+JAVA_HOME_GUESS="$(dirname "$(dirname "$(command -v keytool)")")"
 cat <<EOF
 
 Point Godot at the SDK (Editor Settings -> Export -> Android):
   Android SDK Path : $SDK_ROOT
-  Java SDK Path    : /usr/lib/jvm/default   (or your JDK install)
+  Java SDK Path    : $JAVA_HOME_GUESS
 
 Then build with:  ./scripts/build-android.sh
 EOF

@@ -176,9 +176,15 @@ pub mod codes {
     pub const BTN_SOUTH: u16 = 0x130;
     /// B / circle - right face button.
     pub const BTN_EAST: u16 = 0x131;
-    /// Y / triangle - top face button.
+    /// North face button. On an Xbox pad this is the **X** button:
+    /// `BTN_X = BTN_NORTH = 0x133` in the Linux uapi, which is what the
+    /// xpad driver emits for the physical X key.
     pub const BTN_NORTH: u16 = 0x133;
-    /// X / square - left face button.
+    /// West face button. On an Xbox pad this is the **Y** button.
+    ///
+    /// `BTN_Y = BTN_WEST = 0x134` in the Linux uapi (the xpad driver's
+    /// physical Y). Note the historical alias quirk: X aliases to NORTH,
+    /// Y aliases to WEST.
     pub const BTN_WEST: u16 = 0x134;
     /// Left bumper (LB).
     pub const BTN_TL: u16 = 0x136;
@@ -268,7 +274,13 @@ impl Packet {
     /// `event_type` is a raw evdev type (the routing bit, if any, is preserved
     /// from the value passed in).
     #[must_use]
-    pub fn input(player_id: u16, seq_id: u16, event_type: u16, code: u16, value: i32) -> Self {
+    pub const fn input(
+        player_id: u16,
+        seq_id: u16,
+        event_type: u16,
+        code: u16,
+        value: i32,
+    ) -> Self {
         Self {
             magic: PACKET_MAGIC,
             version: PROTOCOL_VERSION,
@@ -295,7 +307,7 @@ impl Packet {
             seq_id: 0,
             event_type: weak,
             code: strong,
-            value: duration_ms.min(i32::MAX as u32) as i32,
+            value: duration_ms.min(i32::MAX as u32).cast_signed(),
         }
     }
 
@@ -303,13 +315,18 @@ impl Packet {
     #[must_use]
     pub fn rumble_params(self) -> Option<(u16, u16, u32)> {
         if self.kind() == Some(PacketKind::Rumble) {
-            Some((self.code, self.event_type, self.value.max(0) as u32))
+            Some((self.code, self.event_type, self.value.max(0).cast_unsigned()))
         } else {
             None
         }
     }
 
     /// Serialize to the 16-byte wire representation.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the conversion is from `size_of::<Packet>()` bytes,
+    /// which a test pins to `PACKET_SIZE`.
     #[must_use]
     pub fn to_bytes(self) -> [u8; PACKET_SIZE] {
         bytemuck::bytes_of(&self).try_into().expect("Packet is PACKET_SIZE bytes")

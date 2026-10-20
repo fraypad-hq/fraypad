@@ -11,9 +11,12 @@ keywords = ["gamepad", "controller", "uinput", "evdev", "input"]
 categories = ["hardware-support", "game-development", "os::linux-apis"]
 
 [dependencies]
-evdev = "0.13"
+evdev = { workspace = true }
 fraypad_protocol = { workspace = true }
 fraypad_server_core = { workspace = true }
 bytemuck = { workspace = true }
 anyhow = { workspace = true }
-nix = { version = "0.29", features = ["fs"] }
+nix = { workspace = true }
+
+[lints]
+workspace = true

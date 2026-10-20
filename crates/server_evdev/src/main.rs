@@ -50,18 +50,18 @@ fn build_gamepad(player_num: usize) -> Result<VirtualDevice> {
     ff.insert(FFEffectCode::FF_RUMBLE);
 
     let stick_setup = AbsInfo::new(0, -32768, 32767, 16, 128, 0);
-    let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, stick_setup);
-    let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, stick_setup);
-    let abs_rx = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, stick_setup);
-    let abs_ry = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, stick_setup);
+    let axis_left_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, stick_setup);
+    let axis_left_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, stick_setup);
+    let axis_right_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RX, stick_setup);
+    let axis_right_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RY, stick_setup);
 
     let trigger_setup = AbsInfo::new(0, 0, 255, 0, 0, 0);
-    let abs_z = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, trigger_setup);
-    let abs_rz = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, trigger_setup);
+    let axis_trigger_l = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Z, trigger_setup);
+    let axis_trigger_r = UinputAbsSetup::new(AbsoluteAxisCode::ABS_RZ, trigger_setup);
 
     let hat_setup = AbsInfo::new(0, -1, 1, 0, 0, 0);
-    let abs_hat0x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, hat_setup);
-    let abs_hat0y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, hat_setup);
+    let axis_hat_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0X, hat_setup);
+    let axis_hat_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_HAT0Y, hat_setup);
 
     let name = format!("Fraypad Gamepad (P{})", player_num + 1);
 
@@ -74,14 +74,14 @@ fn build_gamepad(player_num: usize) -> Result<VirtualDevice> {
         .with_keys(&keys)?
         .with_ff(&ff)?
         .with_ff_effects_max(16)
-        .with_absolute_axis(&abs_x)?
-        .with_absolute_axis(&abs_y)?
-        .with_absolute_axis(&abs_rx)?
-        .with_absolute_axis(&abs_ry)?
-        .with_absolute_axis(&abs_z)?
-        .with_absolute_axis(&abs_rz)?
-        .with_absolute_axis(&abs_hat0x)?
-        .with_absolute_axis(&abs_hat0y)?
+        .with_absolute_axis(&axis_left_x)?
+        .with_absolute_axis(&axis_left_y)?
+        .with_absolute_axis(&axis_right_x)?
+        .with_absolute_axis(&axis_right_y)?
+        .with_absolute_axis(&axis_trigger_l)?
+        .with_absolute_axis(&axis_trigger_r)?
+        .with_absolute_axis(&axis_hat_x)?
+        .with_absolute_axis(&axis_hat_y)?
         .build()
         .context("Failed to build virtual gamepad. Do you have uinput permissions?")
 }
@@ -338,15 +338,18 @@ impl EvdevBackend {
                 match EventSummary::from(ev) {
                     EventSummary::UInput(uev, UInputCode::UI_FF_UPLOAD, _) => {
                         // Dropping the upload event commits it (retval 0).
+                        // The kernel assigns the id (0..ff_effects_max), so a
+                        // non-negative value is guaranteed for a successful
+                        // upload; `try_from` keeps that assumption explicit.
                         if let Ok(upload) = device.process_ff_upload(uev)
-                            && upload.effect_id() >= 0
+                            && let Ok(effect_id) = u16::try_from(upload.effect_id())
                             && let FFEffectKind::Rumble {
                                 strong_magnitude,
                                 weak_magnitude,
                             } = upload.effect().kind
                         {
                             table.effects.insert(
-                                upload.effect_id() as u16,
+                                effect_id,
                                 FfEffect {
                                     strong: strong_magnitude,
                                     weak: weak_magnitude,
@@ -356,8 +359,10 @@ impl EvdevBackend {
                         }
                     }
                     EventSummary::UInput(uev, UInputCode::UI_FF_ERASE, _) => {
-                        if let Ok(erase) = device.process_ff_erase(uev) {
-                            table.effects.remove(&(erase.effect_id() as u16));
+                        if let Ok(erase) = device.process_ff_erase(uev)
+                            && let Ok(effect_id) = u16::try_from(erase.effect_id())
+                        {
+                            table.effects.remove(&effect_id);
                         }
                     }
                     // Play (value > 0) or stop (value 0) of an uploaded effect;

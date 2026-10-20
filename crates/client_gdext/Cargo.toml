@@ -11,6 +11,9 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = "0.5"
+godot = { workspace = true }
 bytemuck = { workspace = true }
 fraypad_protocol = { workspace = true }
+
+[lints]
+workspace = true
