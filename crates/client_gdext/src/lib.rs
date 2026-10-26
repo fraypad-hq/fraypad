@@ -1,12 +1,3 @@
-//! # Fraypad Client (Godot extension)
-//!
-//! The Godot-facing networking half of Fraypad: a `FraypadClient` node that
-//! performs the UDP handshake with the server, streams input events, and
-//! re-emits rumble requests as Godot signals.
-//!
-//! All connection work is non-blocking and driven from `_process`, so the
-//! render loop never stalls on the network.
-
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
@@ -19,66 +10,35 @@ struct FraypadExtension;
 #[gdextension]
 unsafe impl ExtensionLibrary for FraypadExtension {}
 
-/// How long to wait for the server's Welcome before re-sending Hello.
 const HELLO_TIMEOUT: Duration = Duration::from_millis(500);
-/// How many Hello attempts before giving up on connecting.
 const HELLO_ATTEMPTS: u32 = 5;
-/// How often to send a keep-alive (and re-send the pad snapshot) once
-/// connected. Also bounds how long the server waits before it may evict us.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
-/// How long the server may stay silent while we consider ourselves connected.
-///
-/// The server Pongs every heartbeat and never goes quiet on its own, so this
-/// firing means the server died or evicted us (e.g. the Wi-Fi dropped).
-/// Six missed heartbeat replies is generous enough not to flake on a busy LAN.
 const SERVER_SILENCE_TIMEOUT: Duration = Duration::from_millis(3000);
 
-/// Connection state, advanced one step per frame from `_process`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ConnState {
-    /// No socket, not trying.
     Disconnected,
-    /// Hello sent, awaiting Welcome.
     Connecting,
-    /// A slot is assigned; input flows.
     Connected,
 }
 
 #[derive(GodotClass)]
 #[class(base=Node)]
-/// The Godot-facing client node.
-///
-/// Owns the UDP socket and the non-blocking connection state machine. Add it
-/// to a scene, call [`FraypadClient::set_server`] then
-/// [`FraypadClient::connect_to_server`], and drive input through the
-/// `send_*` methods.
 pub struct FraypadClient {
     base: Base<Node>,
     socket: Option<UdpSocket>,
     server_addr: String,
     state: ConnState,
-    /// The slot assigned by the server during the handshake.
-    ///
-    /// `None` until a handshake succeeds. Input is never sent without a slot,
-    /// so a client that cannot reach the server can never impersonate
-    /// Player 1.
     player_slot: Option<u16>,
-    /// Independent sequence counters per route (gamepad vs keyboard/mouse),
-    /// matching how the server de-duplicates.
     seq_gamepad: u16,
     seq_kbm: u16,
-    /// Deadline for the current Hello attempt, and how many have been sent.
     hello_deadline: Option<Instant>,
     hello_attempts: u32,
-    /// When the last heartbeat went out.
     last_heartbeat: Option<Instant>,
-    /// When we last received *any* packet from the server. Used to notice a
-    /// server that died (or evicted us) while we still think we're connected.
     last_server_contact: Option<Instant>,
-    /// The most recent value sent for each `(event_type, code)`, including the
-    /// routing bit in `event_type`. Re-sent in full on resync so a lost packet
-    /// self-heals instead of leaving a button stuck.
     state_cache: HashMap<(u16, u16), i32>,
+    start_time: Instant,
+    last_ping_ms: i32,
 }
 
 #[godot_api]
@@ -97,6 +57,8 @@ impl INode for FraypadClient {
             last_heartbeat: None,
             last_server_contact: None,
             state_cache: HashMap::new(),
+            start_time: Instant::now(),
+            last_ping_ms: -1,
         }
     }
 
@@ -111,57 +73,48 @@ impl INode for FraypadClient {
 
 #[godot_api]
 impl FraypadClient {
-    /// Emitted when the server assigns us a player slot. Argument: slot (0-3).
     #[signal]
     fn connected(slot: i32);
 
-    /// Emitted when the connection ends after having been established, or
-    /// when an attempt fails outright (bind error, no response). The UI can
-    /// always offer a retry off this signal.
     #[signal]
     fn disconnected();
 
-    /// Emitted when the server refuses our connection. Argument: the
-    /// [`RejectReason`] value (0 = server full, 1 = version mismatch).
     #[signal]
     fn rejected(reason: i32);
 
-    /// Emitted when the host asks the phone to vibrate.
-    ///
-    /// Arguments: `strong` (0-65535), `weak` (0-65535), `duration_ms`.
     #[signal]
     fn rumble(strong: i32, weak: i32, duration_ms: i32);
 
-    /// Set the `ip:port` of the Fraypad server.
+    #[signal]
+    fn ping_updated(ping_ms: i32);
+
     #[func]
-    #[allow(clippy::needless_pass_by_value)] // gdext #[func] requires owned args
+    #[allow(clippy::needless_pass_by_value)]
     pub fn set_server(&mut self, addr: GString) {
         self.server_addr = addr.to_string();
     }
 
-    /// Whether a handshake has assigned this client a player slot.
     #[must_use]
     #[func]
     pub fn is_connected(&self) -> bool {
         self.state == ConnState::Connected
     }
 
-    /// The assigned player slot (0-3), or `-1` if not connected.
     #[must_use]
     #[func]
     pub fn player_slot(&self) -> i32 {
         self.player_slot.map_or(-1, i32::from)
     }
 
-    /// Begin connecting. Non-blocking.
-    ///
-    /// Binds a socket, sends Hello, and returns immediately; the connection is
-    /// advanced each frame by `_process`. Watch the `connected`, `rejected`,
-    /// and `disconnected` signals for the outcome — including for local
-    /// failures like an unbindable socket or an unreachable server.
+    #[must_use]
+    #[func]
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn ping_ms(&self) -> i32 {
+        self.last_ping_ms
+    }
+
     #[func]
     pub fn connect_to_server(&mut self) {
-        // Tear down any prior attempt first.
         self.reset_connection();
 
         let sock = match UdpSocket::bind("0.0.0.0:0") {
@@ -172,7 +125,6 @@ impl FraypadClient {
                 return;
             }
         };
-        // Non-blocking so the handshake never stalls a frame.
         if let Err(e) = sock.set_nonblocking(true) {
             godot_error!("Fraypad: failed to set socket non-blocking: {e}");
             self.base_mut().emit_signal("disconnected", &[]);
@@ -185,7 +137,6 @@ impl FraypadClient {
         self.send_hello();
     }
 
-    /// Send a disconnect request and drop the socket.
     #[func]
     pub fn disconnect_from_server(&mut self) {
         if let (Some(sock), Some(_)) = (self.socket.as_ref(), self.player_slot) {
@@ -195,9 +146,6 @@ impl FraypadClient {
         self.reset_connection();
     }
 
-    // ── Input senders ────────────────────────────────────────────────────
-
-    /// Press or release a keyboard key by evdev keycode.
     #[func]
     pub fn send_key(&mut self, key_code: u16, pressed: bool) {
         self.send_input(
@@ -207,7 +155,6 @@ impl FraypadClient {
         );
     }
 
-    /// Press or release a mouse button.
     #[func]
     pub fn send_mouse_button(&mut self, btn_code: u16, pressed: bool) {
         self.send_input(
@@ -217,30 +164,23 @@ impl FraypadClient {
         );
     }
 
-    /// Press or release a gamepad face/shoulder/menu button.
     #[func]
     pub fn send_button(&mut self, btn_code: u16, pressed: bool) {
         self.send_input(codes::EV_KEY, btn_code, i32::from(pressed));
     }
 
-    /// Send the left stick position (`x`, `y` each in `-1.0..=1.0`).
     #[func]
     pub fn send_stick_left(&mut self, x: f32, y: f32) {
         self.send_input(codes::EV_ABS, codes::ABS_X, scale_axis(x));
         self.send_input(codes::EV_ABS, codes::ABS_Y, scale_axis(y));
     }
 
-    /// Send the right stick position (`x`, `y` each in `-1.0..=1.0`).
     #[func]
     pub fn send_stick_right(&mut self, x: f32, y: f32) {
         self.send_input(codes::EV_ABS, codes::ABS_RX, scale_axis(x));
         self.send_input(codes::EV_ABS, codes::ABS_RY, scale_axis(y));
     }
 
-    /// Send the left trigger (LT) as an analog value in `0.0..=1.0`.
-    ///
-    /// Also emits the matching digital `BTN_TL2` edge so apps that only
-    /// expect a digital trigger still see LT.
     #[func]
     pub fn send_trigger_left(&mut self, value: f32) {
         let v = value.clamp(0.0, 1.0);
@@ -248,10 +188,6 @@ impl FraypadClient {
         self.send_button(codes::BTN_TL2, v > 0.5);
     }
 
-    /// Send the right trigger (RT) as an analog value in `0.0..=1.0`.
-    ///
-    /// Also emits the matching digital `BTN_TR2` edge so apps that only
-    /// expect a digital trigger still see RT.
     #[func]
     pub fn send_trigger_right(&mut self, value: f32) {
         let v = value.clamp(0.0, 1.0);
@@ -259,38 +195,32 @@ impl FraypadClient {
         self.send_button(codes::BTN_TR2, v > 0.5);
     }
 
-    /// Press or release the left stick click (L3).
     #[func]
     pub fn send_thumb_left(&mut self, pressed: bool) {
         self.send_button(codes::BTN_THUMBL, pressed);
     }
 
-    /// Press or release the right stick click (R3).
     #[func]
     pub fn send_thumb_right(&mut self, pressed: bool) {
         self.send_button(codes::BTN_THUMBR, pressed);
     }
 
-    /// Send the d-pad horizontal axis: `-1` left, `0` center, `1` right.
     #[func]
     pub fn send_dpad_x(&mut self, value: i32) {
         self.send_input(codes::EV_ABS, codes::ABS_HAT0X, value.clamp(-1, 1));
     }
 
-    /// Send the d-pad vertical axis: `-1` up, `0` center, `1` down.
     #[func]
     pub fn send_dpad_y(&mut self, value: i32) {
         self.send_input(codes::EV_ABS, codes::ABS_HAT0Y, value.clamp(-1, 1));
     }
 
-    /// Send a relative mouse movement, in device units.
     #[func]
     pub fn send_mouse_move(&mut self, x: i32, y: i32) {
         self.send_input(codes::EV_REL | codes::ROUTE_KBM, codes::REL_X, x);
         self.send_input(codes::EV_REL | codes::ROUTE_KBM, codes::REL_Y, y);
     }
 
-    /// Send a scroll wheel delta; positive `vertical` scrolls up.
     #[func]
     pub fn send_scroll(&mut self, vertical: i32, horizontal: i32) {
         self.send_input(codes::EV_REL | codes::ROUTE_KBM, codes::REL_WHEEL, vertical);
@@ -301,9 +231,6 @@ impl FraypadClient {
         );
     }
 
-    // ── Connection state machine ─────────────────────────────────────────
-
-    /// Advance the connection one step. Called every frame from `_process`.
     fn tick(&mut self) {
         match self.state {
             ConnState::Disconnected => {}
@@ -313,7 +240,6 @@ impl FraypadClient {
     }
 
     fn tick_connecting(&mut self) {
-        // Drain anything the server has sent.
         while let Some(packet) = self.poll_packet() {
             match packet.kind() {
                 Some(PacketKind::Welcome) => {
@@ -321,8 +247,6 @@ impl FraypadClient {
                     self.state = ConnState::Connected;
                     self.last_heartbeat = Some(Instant::now());
                     self.last_server_contact = Some(Instant::now());
-                    // Reset per-route sequence counters to match the fresh
-                    // session the server just opened for us.
                     self.seq_gamepad = 0;
                     self.seq_kbm = 0;
                     self.state_cache.clear();
@@ -343,11 +267,10 @@ impl FraypadClient {
                         .emit_signal("rejected", &[reason.to_variant()]);
                     return;
                 }
-                _ => {} // Ignore stray packets while connecting.
+                _ => {}
             }
         }
 
-        // No reply yet; re-send Hello on timeout, give up after the attempts.
         if self.hello_deadline.is_some_and(|d| Instant::now() >= d) {
             if self.hello_attempts >= HELLO_ATTEMPTS {
                 godot_error!("Fraypad: no response from server after {HELLO_ATTEMPTS} attempts");
@@ -360,8 +283,6 @@ impl FraypadClient {
     }
 
     fn tick_connected(&mut self) {
-        // Handle any server packets (Pong, Rumble, Resync). Any packet at all
-        // counts as proof the server is alive and still has our slot.
         let mut heard_from_server = false;
         while let Some(packet) = self.poll_packet() {
             heard_from_server = true;
@@ -381,30 +302,33 @@ impl FraypadClient {
                 Some(PacketKind::Resync) => {
                     self.resync_state();
                 }
-                _ => {} // Pong and anything else needs no action here.
+                Some(PacketKind::Pong) => {
+                    let sent_time = packet.value;
+                    let now_ms =
+                        i32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(i32::MAX);
+                    let rtt = (now_ms - sent_time).max(0);
+                    self.last_ping_ms = rtt;
+                    self.base_mut()
+                        .emit_signal("ping_updated", &[rtt.to_variant()]);
+                }
+                _ => {}
             }
         }
         if heard_from_server {
             self.last_server_contact = Some(Instant::now());
         }
 
-        // Keep-alive and periodic self-healing snapshot.
         if self
             .last_heartbeat
             .is_some_and(|t| t.elapsed() >= HEARTBEAT_INTERVAL)
         {
             self.last_heartbeat = Some(Instant::now());
             let mut hb = Packet::new(PacketKind::Heartbeat);
-            // A monotonic microsecond stamp, truncated to fit the i32 field;
-            // only used as an opaque echo. `try_into` clamps rather than wraps.
-            hb.value = i32::try_from(Instant::now().elapsed().as_millis()).unwrap_or(i32::MAX);
+            hb.value = i32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(i32::MAX);
             self.send_raw(&hb);
             self.resync_state();
         }
 
-        // The server has gone quiet: it died, or evicted us and reclaimed the
-        // slot. Drop the connection so the UI can offer a retry instead of
-        // silently sending input into the void.
         if self
             .last_server_contact
             .is_some_and(|t| t.elapsed() >= SERVER_SILENCE_TIMEOUT)
@@ -422,8 +346,6 @@ impl FraypadClient {
         self.send_raw(&hello);
     }
 
-    /// Send one input event, remember it for resync, and advance the matching
-    /// route's sequence counter.
     fn send_input(&mut self, event_type: u16, code: u16, value: i32) {
         if self.state != ConnState::Connected {
             return;
@@ -444,20 +366,15 @@ impl FraypadClient {
         let packet = Packet::input(slot, seq, event_type, code, value);
         self.send_raw(&packet);
 
-        // Remember the latest value so a resync can replay it.
-        self.state_cache.insert((event_type, code), value);
+        if codes::event_type(event_type) != codes::EV_REL {
+            self.state_cache.insert((event_type, code), value);
+        }
     }
 
-    /// Re-send every cached input so the server converges on our true state.
-    ///
-    /// Sent after a Welcome and on each heartbeat. This is what makes lost
-    /// UDP packets self-heal: even if an individual Input was dropped, the
-    /// next snapshot overwrites the stale value.
     fn resync_state(&mut self) {
         let Some(slot) = self.player_slot else {
             return;
         };
-        // Collect to avoid holding a borrow of the cache across sends.
         let entries: Vec<(u16, u16, i32)> = self
             .state_cache
             .iter()
@@ -478,26 +395,21 @@ impl FraypadClient {
         }
     }
 
-    /// Send a packet if a socket exists. Errors are non-fatal (a full send
-    /// buffer just drops a UDP datagram; the next resync covers it).
     fn send_raw(&self, packet: &Packet) {
         if let Some(sock) = self.socket.as_ref() {
             let _ = sock.send_to(&packet.to_bytes(), &self.server_addr);
         }
     }
 
-    /// Read one datagram, non-blocking. Returns `None` when nothing is pending
-    /// or the packet is malformed.
     fn poll_packet(&self) -> Option<Packet> {
         let sock = self.socket.as_ref()?;
         let mut buf = [0u8; 64];
         match sock.recv_from(&mut buf) {
             Ok((len, _)) => Packet::from_bytes(&buf[..len]),
-            Err(_) => None, // WouldBlock (nothing pending) or transient error.
+            Err(_) => None,
         }
     }
 
-    /// Drop all connection state without sending anything.
     fn reset_connection(&mut self) {
         self.socket = None;
         self.state = ConnState::Disconnected;
@@ -509,17 +421,16 @@ impl FraypadClient {
         self.seq_gamepad = 0;
         self.seq_kbm = 0;
         self.state_cache.clear();
+        self.last_ping_ms = -1;
     }
 }
 
-/// Scale a `-1.0..=1.0` stick axis to the wire's `-32767..=32767` range.
-#[allow(clippy::cast_possible_truncation)] // round() bounds it to ±32767
+#[allow(clippy::cast_possible_truncation)]
 fn scale_axis(v: f32) -> i32 {
     (v.clamp(-1.0, 1.0) * 32767.0).round() as i32
 }
 
-/// Scale a `0.0..=1.0` trigger to the wire's `0..=255` range.
-#[allow(clippy::cast_possible_truncation)] // round() bounds it to 0..=255
+#[allow(clippy::cast_possible_truncation)]
 fn scale_trigger(v: f32) -> i32 {
     (v.clamp(0.0, 1.0) * 255.0).round() as i32
 }

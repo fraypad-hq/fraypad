@@ -131,7 +131,7 @@ Launch the app on the phone and the PC server at the same time; the app
 connects on startup and is assigned one of four slots. Press any button to
 drive the matching virtual pad on the PC.
 
-The first time it runs, the app uses a placeholder server address. Tap the ⚙
+The first time it runs, the app uses a placeholder server address. Tap the Set
 button, enter your PC's LAN IP and port (e.g. `192.168.1.10:54321`), and hit
 **Save & Connect**. The address is stored on the phone, so you only set it
 once. The status line at the top shows the connection state and offers a retry
@@ -139,8 +139,8 @@ when the server is unreachable.
 
 ### Keyboard & mouse
 
-Tap the ⌨ button to swap the whole pad for a keyboard/mouse surface; the button
-becomes 🎮 and swaps back. Switching releases anything the hidden side was
+Tap the KBM button to swap the whole pad for a keyboard/mouse surface; the button
+becomes Pad and swaps back. Switching releases anything the hidden side was
 holding, so nothing sticks on the PC.
 
 The surface is a trackpad on the left and a QWERTY keyboard on the right:

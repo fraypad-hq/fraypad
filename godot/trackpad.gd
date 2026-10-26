@@ -1,47 +1,44 @@
 extends Control
 class_name FraypadTrackpad
 
-## A trackpad surface: drag to move the cursor, tap to left-click, two-finger
-## tap to right-click, two-finger drag to scroll.
-##
-## Movement is sent as relative deltas, so the cursor keeps moving from
-## wherever it is — that's what makes this feel like a real laptop trackpad
-## instead of an absolute "tap where you want the pointer" surface.
-
-## Cursor units sent per screen pixel of finger travel.
-@export var sensitivity: float = 1.0
-## Scroll clicks sent per pixel of two-finger travel.
-@export var scroll_sensitivity: float = 0.02
-## A press-release under these bounds is a tap, not a drag.
-@export var tap_max_travel: float = 12.0
-@export var tap_max_seconds: float = 0.25
+@export var sensitivity: float = 1.2
+@export var scroll_sensitivity: float = 0.08
+@export var jitter_deadzone: float = 1.2
+@export var tap_max_travel: float = 14.0
+@export var tap_max_seconds: float = 0.28
 
 var _client: FraypadClient
 
-## Touches currently on the surface: index -> last global position.
 var _touches: Dictionary = {}
-## The first finger's press, used to decide tap vs drag.
 var _primary: int = -1
-var _primary_start: Vector2 = Vector2.ZERO
 var _primary_time: float = 0.0
 var _primary_travel: float = 0.0
-## Set once the primary finger has moved enough to be a drag rather than a tap.
+var _secondary: int = -1
+var _secondary_travel: float = 0.0
 var _dragging: bool = false
-## Set when the gesture became a two-finger one, so lifting doesn't click.
-var _multi: bool = false
+var _scrolling: bool = false
+
+var _scroll_accum: float = 0.0
+var _mouse_accum: Vector2 = Vector2.ZERO
 
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(320, 200)
+	custom_minimum_size = Vector2(240, 200)
 
 
-## The signal client, fetched on first use and cached.
-##
-## Avoids resolving it in `_ready`, where the GDExtension class may still be
-## unregistered and the cast would yield null for the rest of the session.
+func _draw() -> void:
+	var r := Rect2(Vector2.ZERO, size)
+	draw_rect(r, Color(0.08, 0.09, 0.12, 0.92), true)
+	draw_rect(r, Color(0.20, 0.24, 0.32, 0.85), false, 1.5)
+	var font := ThemeDB.fallback_font
+	var title := "Trackpad"
+	draw_string(font, Vector2(16, 26), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.85, 0.90, 0.96))
+	var sub := "Tap: Click  •  2-Finger: Right Click / Scroll"
+	draw_string(font, Vector2(16, 44), sub, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.45, 0.50, 0.60))
+
+
 func _get_client() -> FraypadClient:
 	if _client == null:
-		# Path lookup, not group: see the note in gamepad_button.gd.
 		var root: Node = get_tree().current_scene
 		if root == null:
 			root = owner
@@ -50,15 +47,21 @@ func _get_client() -> FraypadClient:
 	return _client
 
 
-## Backgrounding the app cancels the touch stream; forget every finger so a
-## stale press can't be mistaken for a held click later.
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_PAUSED \
-			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
-		_touches.clear()
-		_primary = -1
-		_dragging = false
-		_multi = false
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		_reset_gestures()
+
+
+func _reset_gestures() -> void:
+	_touches.clear()
+	_primary = -1
+	_secondary = -1
+	_primary_travel = 0.0
+	_secondary_travel = 0.0
+	_dragging = false
+	_scrolling = false
+	_scroll_accum = 0.0
+	_mouse_accum = Vector2.ZERO
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -75,40 +78,50 @@ func _gui_input(event: InputEvent) -> void:
 
 func _touch(index: int, pos: Vector2, pressed: bool) -> void:
 	if pressed:
-		if _touches.is_empty():
+		_touches[index] = pos
+		if _touches.size() == 1:
 			_primary = index
-			_primary_start = pos
 			_primary_time = Time.get_ticks_msec() / 1000.0
 			_primary_travel = 0.0
 			_dragging = false
-			_multi = false
-		elif index != _primary:
-			# A second finger turns this into a scroll gesture.
-			_multi = true
-		_touches[index] = pos
+			_scrolling = false
+		elif _touches.size() == 2:
+			_secondary = index
+			_secondary_travel = 0.0
 	else:
-		if index == _primary and not _dragging and not _multi:
-			_maybe_tap(pos)
+		if _touches.size() == 2 and not _scrolling and not _dragging:
+			var elapsed := Time.get_ticks_msec() / 1000.0 - _primary_time
+			if _primary_travel <= tap_max_travel and _secondary_travel <= tap_max_travel and elapsed <= tap_max_seconds:
+				_send_right_click()
+		elif index == _primary and not _dragging and not _scrolling and _touches.size() == 1:
+			var elapsed := Time.get_ticks_msec() / 1000.0 - _primary_time
+			if _primary_travel <= tap_max_travel and elapsed <= tap_max_seconds:
+				_send_left_click()
+
 		_touches.erase(index)
-		if index == _primary:
-			_primary = -1
-			_dragging = false
-			_multi = false
+		if _touches.is_empty():
+			_reset_gestures()
 
 
 func _drag(index: int, pos: Vector2) -> void:
 	if not _touches.has(index):
 		return
-	# Delta since this finger's previous position, in screen pixels.
 	var delta: Vector2 = pos - _touches[index]
+	if delta.length() < jitter_deadzone:
+		return
 	_touches[index] = pos
 
 	if _touches.size() >= 2:
-		# Two fingers scroll: vertical finger travel becomes wheel clicks.
-		var client := _get_client()
-		if client:
-			# Wheel positive is up, so invert the screen-space Y delta.
-			client.send_scroll(int(-delta.y * scroll_sensitivity), 0)
+		_secondary_travel += delta.length()
+		if _secondary_travel > tap_max_travel:
+			_scrolling = true
+		_scroll_accum += -delta.y * scroll_sensitivity
+		var steps := int(_scroll_accum)
+		if steps != 0:
+			var client := _get_client()
+			if client:
+				client.send_scroll(steps, 0)
+			_scroll_accum -= steps
 		return
 
 	if index != _primary:
@@ -117,18 +130,29 @@ func _drag(index: int, pos: Vector2) -> void:
 	_primary_travel += delta.length()
 	if not _dragging and _primary_travel > tap_max_travel:
 		_dragging = true
+
 	if _dragging:
-		var client := _get_client()
-		if client:
-			client.send_mouse_move(int(delta.x * sensitivity), int(delta.y * sensitivity))
+		_mouse_accum += delta * sensitivity
+		var mx := int(_mouse_accum.x)
+		var my := int(_mouse_accum.y)
+		if mx != 0 or my != 0:
+			var client := _get_client()
+			if client:
+				client.send_mouse_move(mx, my)
+			_mouse_accum -= Vector2(mx, my)
 
 
-## A quick, near-stationary press-release is a tap. With one finger it is a
-## left click; the caller maps two-finger taps to right click before we get
-## here (a two-finger gesture never reaches this path).
-func _maybe_tap(_pos: Vector2) -> void:
+func _send_left_click() -> void:
+	Input.vibrate_handheld(12)
 	var client := _get_client()
-	var elapsed := Time.get_ticks_msec() / 1000.0 - _primary_time
-	if _primary_travel <= tap_max_travel and elapsed <= tap_max_seconds and client:
+	if client:
 		client.send_mouse_button(0x110, true)
 		client.send_mouse_button(0x110, false)
+
+
+func _send_right_click() -> void:
+	Input.vibrate_handheld(16)
+	var client := _get_client()
+	if client:
+		client.send_mouse_button(0x111, true)
+		client.send_mouse_button(0x111, false)

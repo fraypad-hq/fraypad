@@ -1,35 +1,16 @@
 extends RefCounted
-
-## Named layout slots, on disk and as portable JSON.
-##
-## A *layout* is the four thumb-unit centres and scales. Layouts get their own
-## file (`user://layouts.json`) rather than sharing `config.cfg` with the server
-## address: the two used to overwrite each other, because saving the server
-## rebuilt the config file from scratch and dropped every layout key with it.
-##
-## The on-disk document is plain JSON so a layout can be exported from one phone
-## and imported on another. `version` guards the format; a document from a newer
-## version is refused rather than silently half-read.
-##
-## Unit centres are fractions of the canvas (x of width, y of height) so a layout
-## keeps its proportions on a different screen instead of landing off-screen.
 class_name LayoutStore
 
 const PATH := "user://layouts.json"
 const FORMAT_VERSION := 1
-
-## Sentinel slot name meaning "the layout currently in effect". Always exists.
 const ACTIVE := "__active__"
 
-## JSON value: {"version": 1, "active": "<slot>", "slots": {"<name>": {...}}}
 var _doc: Dictionary = {}
 
 
 func _init() -> void:
 	_load()
 
-
-# ── Disk ─────────────────────────────────────────────────────────────────
 
 func _load() -> void:
 	_doc = {"version": FORMAT_VERSION, "active": "", "slots": {}}
@@ -42,12 +23,9 @@ func _load() -> void:
 	f.close()
 	var parsed: Variant = JSON.parse_string(text)
 	if typeof(parsed) != TYPE_DICTIONARY:
-		# A corrupt or hand-edited file must not take the app down; start clean.
-		push_warning("layouts.json unreadable; starting with no saved layouts")
 		return
 	var doc: Dictionary = parsed
 	if int(doc.get("version", 0)) > FORMAT_VERSION:
-		push_warning("layouts.json is from a newer Fraypad; ignoring it")
 		return
 	_doc["version"] = FORMAT_VERSION
 	if typeof(doc.get("slots")) == TYPE_DICTIONARY:
@@ -58,15 +36,11 @@ func _load() -> void:
 func save() -> void:
 	var f := FileAccess.open(PATH, FileAccess.WRITE)
 	if f == null:
-		push_error("could not write " + PATH)
 		return
 	f.store_string(JSON.stringify(_doc, "  "))
 	f.close()
 
 
-# ── Slots ────────────────────────────────────────────────────────────────
-
-## Every save-slot name, sorted, excluding the built-in active slot.
 func slot_names() -> Array:
 	var names: Array = _doc["slots"].keys()
 	names.erase(ACTIVE)
@@ -78,7 +52,6 @@ func has_slot(name: String) -> bool:
 	return (_doc["slots"] as Dictionary).has(name)
 
 
-## The stored payload for a slot, or an empty dictionary.
 func get_slot(name: String) -> Dictionary:
 	return (_doc["slots"] as Dictionary).get(name, {})
 
@@ -96,7 +69,6 @@ func erase_slot(name: String) -> bool:
 	return true
 
 
-## The slot the user last loaded, or "" when they are on the built-in layout.
 func active_slot() -> String:
 	return str(_doc["active"])
 
@@ -105,9 +77,6 @@ func set_active_slot(name: String) -> void:
 	_doc["active"] = name
 
 
-# ── JSON import / export ─────────────────────────────────────────────────
-
-## A single slot as a standalone, shareable JSON document.
 func export_slot(name: String) -> String:
 	var out := {
 		"version": FORMAT_VERSION,
@@ -118,7 +87,6 @@ func export_slot(name: String) -> String:
 	return JSON.stringify(out, "  ")
 
 
-## Every slot as one standalone document, so a whole set moves together.
 func export_all() -> String:
 	return JSON.stringify({
 		"version": FORMAT_VERSION,
@@ -127,12 +95,6 @@ func export_all() -> String:
 	}, "  ")
 
 
-## Merge a JSON document into the store.
-##
-## Returns a report dictionary: `ok`, `added` (names imported), `error`. An
-## unreadable document, a wrong version or a missing `slots` object is reported
-## rather than throwing, so the UI can explain what went wrong. Existing slots
-## keep their names by gaining a ` (2)`-style suffix rather than being replaced.
 func import_json(text: String) -> Dictionary:
 	var parsed: Variant = JSON.parse_string(text)
 	if typeof(parsed) != TYPE_DICTIONARY:
@@ -158,11 +120,8 @@ func import_json(text: String) -> Dictionary:
 	return {"ok": true, "error": "", "added": added}
 
 
-## `name`, or `name (2)`, `name (3)`… if that name is taken.
 func _unique_name(name: String) -> String:
-	if name == "":
-		name = "Imported"
-	if name == ACTIVE:
+	if name == "" or name == ACTIVE:
 		name = "Imported"
 	if not has_slot(name):
 		return name

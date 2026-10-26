@@ -7,73 +7,116 @@ enum Action {
 	FACE_A, FACE_B, FACE_X, FACE_Y,
 	BUMPER_LEFT, BUMPER_RIGHT,
 	TRIGGER_LEFT, TRIGGER_RIGHT,
-	BACK, START, XBOX
+	BACK, START, XBOX,
+	THUMB_LEFT, THUMB_RIGHT
 }
 
 @export var action: Action = Action.NONE
-@export var overlap_margin: float = 18.0
+@export var overlap_margin: float = 8.0
 
 var _client: FraypadClient
 var _left_stick: FraypadStick
 var _right_stick: FraypadStick
 
-# Maps touch_index -> bool (is this finger currently inside this button?)
 var _fingers: Dictionary = {}
-# Maps touch_index -> Vector2 where that finger first went down. Used to tell
-# whether a finger began on a stick (and so belongs to the stick, not us).
 var _press_origin: Dictionary = {}
 var _is_active: bool = false
+var trigger_value: float = 0.0
 
-# Sentinel for mouse input on desktop
 const MOUSE_TOUCH_INDEX = 99
+
+const COLOR_FACE_A := Color(0.12, 0.82, 0.38)
+const COLOR_FACE_B := Color(0.92, 0.22, 0.24)
+const COLOR_FACE_X := Color(0.20, 0.65, 0.98)
+const COLOR_FACE_Y := Color(0.98, 0.78, 0.12)
+const COLOR_XBOX   := Color(0.25, 0.85, 0.45)
+const COLOR_TRIGGER := Color(0.06, 0.65, 0.32)
+
 
 func _ready() -> void:
 	focus_mode = Control.FOCUS_NONE
-	# Resolve siblings by unique name; the whole tree lookup would also match
-	# unrelated nodes if the scene ever grew a second client or stick.
 	_left_stick = get_node_or_null("%LeftStick") as FraypadStick
 	_right_stick = get_node_or_null("%RightStick") as FraypadStick
+	resized.connect(_on_resized)
+	_on_resized()
 
-	# The client is looked up lazily (see `_get_client`) rather than here: the
-	# GDExtension class can still be unregistered while this node readies, and
-	# the `as FraypadClient` cast would quietly yield null for the whole run.
-
-	# Register D-pad buttons into groups for axis conflict resolution
 	match action:
 		Action.DPAD_UP, Action.DPAD_DOWN:
 			add_to_group("dpad_y")
 		Action.DPAD_LEFT, Action.DPAD_RIGHT:
 			add_to_group("dpad_x")
+		Action.TRIGGER_LEFT, Action.TRIGGER_RIGHT:
+			add_to_group("triggers")
+		Action.FACE_A:
+			_apply_face_style(COLOR_FACE_A)
+		Action.FACE_B:
+			_apply_face_style(COLOR_FACE_B)
+		Action.FACE_X:
+			_apply_face_style(COLOR_FACE_X)
+		Action.FACE_Y:
+			_apply_face_style(COLOR_FACE_Y)
+		Action.XBOX:
+			add_theme_color_override("font_color", COLOR_XBOX)
+			add_theme_color_override("font_pressed_color", Color.WHITE)
 
-## Backgrounding the app cancels every touch stream, so drop all fingers and
-## release the button. Without this a key held when the user switches away
-## stays pressed on the PC forever (the release touch never arrives).
+
+func _on_resized() -> void:
+	pivot_offset = size * 0.5
+
+
+func _apply_face_style(accent: Color) -> void:
+	add_theme_color_override("font_color", accent)
+	add_theme_color_override("font_pressed_color", Color.WHITE)
+	add_theme_color_override("font_hover_color", accent.lightened(0.2))
+
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = Color(0.09, 0.10, 0.13, 0.94)
+	normal.border_color = Color(accent.r, accent.g, accent.b, 0.35)
+	normal.set_border_width_all(2)
+	normal.set_corner_radius_all(999)
+	add_theme_stylebox_override("normal", normal)
+
+	var pressed := StyleBoxFlat.new()
+	pressed.bg_color = Color(accent.r * 0.25, accent.g * 0.25, accent.b * 0.25, 0.98)
+	pressed.border_color = accent
+	pressed.set_border_width_all(3)
+	pressed.set_corner_radius_all(999)
+	add_theme_stylebox_override("pressed", pressed)
+
+
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_PAUSED \
-			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
-		if _fingers.is_empty():
-			return
-		_fingers.clear()
-		_press_origin.clear()
-		if _is_active:
-			_is_active = false
-			_update_visual()
-			_send_dpad_aware(false)
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		release()
 
-## The signal client, fetched on first use and cached.
-##
-## Resolving it in `_ready` proved unreliable on Android: the GDExtension class
-## isn't always registered while sibling nodes are readying, so the cast
-## returned null and every send logged "cannot call method on a null value"
-## for the rest of the session. Looking it up when the first input arrives
-## sidesteps the ordering entirely.
+
+func release() -> void:
+	_fingers.clear()
+	_press_origin.clear()
+	if _is_active:
+		_is_active = false
+		trigger_value = 0.0
+		_update_visual()
+		_send_dpad_aware(false)
+		queue_redraw()
+
+
+func _draw() -> void:
+	if _is_trigger() and trigger_value > 0.0:
+		var fill_h := size.y * trigger_value
+		var fill_r := Rect2(2.0, size.y - fill_h, size.x - 4.0, fill_h - 2.0)
+		draw_rect(fill_r, Color(COLOR_TRIGGER.r, COLOR_TRIGGER.g, COLOR_TRIGGER.b, 0.45), true)
+		draw_rect(fill_r, Color(COLOR_TRIGGER.r, COLOR_TRIGGER.g, COLOR_TRIGGER.b, 0.85), false, 1.5)
+		if trigger_value >= 0.05:
+			var font := get_theme_font("font")
+			var pct_text := "%d%%" % int(trigger_value * 100.0)
+			var font_size := maxi(11, int(size.y * 0.18))
+			var text_w := font.get_string_size(pct_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size).x
+			var text_pos := Vector2((size.x - text_w) * 0.5, size.y - 8.0)
+			draw_string(font, text_pos, pct_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color(0.9, 0.95, 1.0, 0.85))
+
+
 func _get_client() -> FraypadClient:
 	if _client == null:
-		# Look the node up by path rather than by group. The group lookup
-		# returned null on Android: the client is a GDExtension node, and its
-		# scene-declared group membership is not visible while the rest of the
-		# scene readies, so every button silently sent nothing. The path is
-		# fixed by the scene, so resolve it from the root we belong to.
 		var root: Node = get_tree().current_scene
 		if root == null:
 			root = owner
@@ -89,19 +132,41 @@ func _is_joystick_finger(index: int) -> bool:
 		return true
 	return false
 
-## Whether a touch landed inside either stick's interactive area.
-##
-## `_input()` runs before the stick's `_gui_input()` claims a finger, so on
-## the very first frame of a touch `_touch_index` is still unset. Checking the
-## geometry closes that race, which otherwise made grabbing the right stick
-## fire a spurious face-button press.
+
 func _is_over_stick(pos: Vector2) -> bool:
 	for stick in [_left_stick, _right_stick]:
-		if stick and stick.get_global_rect().has_point(pos):
+		if stick and stick.is_visible_in_tree() and stick.get_global_rect().has_point(pos):
 			return true
 	return false
 
+
+func _is_trigger() -> bool:
+	return action == Action.TRIGGER_LEFT or action == Action.TRIGGER_RIGHT
+
+
+func _is_trigger_finger(index: int) -> bool:
+	var tree := get_tree()
+	if tree == null:
+		return false
+	for node in tree.get_nodes_in_group("triggers"):
+		if node is GamepadButton and (node as GamepadButton)._press_origin.has(index):
+			return true
+	return false
+
+
+func _calculate_trigger_pull(index: int, pos: Vector2) -> float:
+	var origin: Vector2 = _press_origin.get(index, pos)
+	var drag_down: float = pos.y - origin.y
+	var max_travel: float = maxf(size.y * 2.2, 150.0)
+	return clampf(drag_down / max_travel, 0.0, 1.0)
+
+
 func _input(event: InputEvent) -> void:
+	if not is_visible_in_tree():
+		if not _fingers.is_empty() or _is_active:
+			release()
+		return
+
 	var index: int = -1
 	var global_pos: Vector2
 	var is_touch_event: bool = false
@@ -112,88 +177,157 @@ func _input(event: InputEvent) -> void:
 		is_touch_event = true
 		if _is_joystick_finger(index):
 			return
-		# A fresh touch inside a stick belongs to the stick, not to us.
-		if event.pressed and _is_over_stick(global_pos):
-			return
 		if event.pressed:
-			# Remember where this finger went down. A finger that starts on a
-			# stick is excluded above; every other finger is a candidate for
-			# slide-to-type, so it is tracked even when it goes down on empty
-			# space (that is how a swipe *onto* a button starts).
-			_press_origin[index] = global_pos
-			_fingers[index] = get_global_rect().has_point(global_pos)
+			if _is_over_stick(global_pos):
+				return
+			if _is_trigger():
+				if not get_global_rect().has_point(global_pos):
+					return
+				_press_origin[index] = global_pos
+				_fingers[index] = true
+				trigger_value = 0.0
+				_send_trigger(0.0)
+				queue_redraw()
+			else:
+				if _is_trigger_finger(index):
+					return
+				if get_global_rect().grow(overlap_margin).has_point(global_pos):
+					_fingers[index] = true
+				else:
+					_fingers.erase(index)
 		else:
-			_fingers.erase(index)
-			_press_origin.erase(index)
+			if _is_trigger():
+				if not _press_origin.has(index):
+					return
+				_fingers.erase(index)
+				_press_origin.erase(index)
+				if _fingers.is_empty():
+					trigger_value = 0.0
+					_send_trigger(0.0)
+					queue_redraw()
+			else:
+				_fingers.erase(index)
 
 	elif event is InputEventScreenDrag:
 		index = event.index
 		global_pos = event.position
 		is_touch_event = true
-		# A finger holding a stick is a stick finger: it must never light up a
-		# button it happens to slide across, and if it somehow pressed here
-		# before grabbing the stick, drop it.
 		if _is_joystick_finger(index):
-			if _fingers.has(index):
+			_fingers.erase(index)
+			_press_origin.erase(index)
+			return
+		if _is_trigger():
+			if not _press_origin.has(index):
+				return
+			trigger_value = _calculate_trigger_pull(index, global_pos)
+			_send_trigger(trigger_value)
+			queue_redraw()
+		else:
+			if _is_trigger_finger(index):
+				return
+			if _is_over_stick(global_pos):
 				_fingers.erase(index)
 			else:
-				return
-		elif _is_over_stick(_press_origin.get(index, global_pos)):
-			# The finger started on a stick (the stick claims it a frame later,
-			# so `_is_joystick_finger` can lag) — leave it to the stick.
-			return
-		else:
-			# Slide-to-type: a free finger presses whatever button it is over
-			# right now, so dragging across A -> B -> A -> B types them in turn.
-			# The rect is only grown by a hair; a bigger band would light up
-			# flush neighbours as the finger crosses the seam between them.
-			if not _fingers.has(index):
-				return
-			_fingers[index] = get_global_rect().grow(overlap_margin).has_point(global_pos)
+				var inside := get_global_rect().grow(overlap_margin).has_point(global_pos)
+				if inside:
+					_fingers[index] = true
+				else:
+					_fingers.erase(index)
 
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		index = MOUSE_TOUCH_INDEX
 		global_pos = event.global_position
 		is_touch_event = true
+		if _is_joystick_finger(index):
+			return
 		if event.pressed:
-			_press_origin[index] = global_pos
-			_fingers[index] = get_global_rect().has_point(global_pos)
+			if _is_over_stick(global_pos):
+				return
+			if _is_trigger():
+				if not get_global_rect().has_point(global_pos):
+					return
+				_press_origin[index] = global_pos
+				_fingers[index] = true
+				trigger_value = 0.0
+				_send_trigger(0.0)
+				queue_redraw()
+			else:
+				if _is_trigger_finger(index):
+					return
+				if get_global_rect().grow(overlap_margin).has_point(global_pos):
+					_fingers[index] = true
+				else:
+					_fingers.erase(index)
 		else:
-			_fingers.erase(index)
-			_press_origin.erase(index)
+			if _is_trigger():
+				if not _press_origin.has(index):
+					return
+				_fingers.erase(index)
+				_press_origin.erase(index)
+				if _fingers.is_empty():
+					trigger_value = 0.0
+					_send_trigger(0.0)
+					queue_redraw()
+			else:
+				_fingers.erase(index)
 
 	elif event is InputEventMouseMotion:
-		if not _fingers.has(MOUSE_TOUCH_INDEX):
-			return
+		index = MOUSE_TOUCH_INDEX
 		global_pos = event.global_position
 		is_touch_event = true
-		_fingers[MOUSE_TOUCH_INDEX] = get_global_rect().grow(overlap_margin).has_point(global_pos)
+		if _is_trigger():
+			if not _press_origin.has(index):
+				return
+			trigger_value = _calculate_trigger_pull(MOUSE_TOUCH_INDEX, global_pos)
+			_send_trigger(trigger_value)
+			queue_redraw()
+		else:
+			if _is_trigger_finger(index):
+				return
+			if _is_over_stick(global_pos):
+				_fingers.erase(index)
+			else:
+				var inside := get_global_rect().grow(overlap_margin).has_point(global_pos)
+				if inside:
+					_fingers[index] = true
+				else:
+					_fingers.erase(index)
 
 	if not is_touch_event:
 		return
 
-	# Recompute active state — pressed if any finger is inside
 	var now_active: bool = false
 	for inside in _fingers.values():
 		if inside:
 			now_active = true
 			break
 
-	# Only send on transitions
 	if now_active != _is_active:
+		if now_active:
+			Input.vibrate_handheld(12)
 		_is_active = now_active
 		_update_visual()
 		_send_dpad_aware(_is_active)
 
-## Dim the button slightly while it is held. The base colour comes from the
-## scene (Xbox face buttons are tinted), so this multiplies rather than
-## replaces; the pressed tint stays a visible shift for every base colour.
-##
-## Modulate components stay inside 0..1: values above 1 ask the renderer for an
-## overbright/HDR blend, which the GL Compatibility backend handles differently
-## from the desktop Vulkan renderer.
+
 func _update_visual() -> void:
-	modulate = Color(0.55, 0.6, 0.7) if _is_active else Color.WHITE
+	if _is_active:
+		scale = Vector2(0.93, 0.93)
+		modulate = Color(1.15, 1.15, 1.2)
+	else:
+		scale = Vector2.ONE
+		modulate = Color.WHITE
+
+
+func _send_trigger(val: float) -> void:
+	var client := _get_client()
+	if client == null:
+		return
+	if action == Action.TRIGGER_LEFT:
+		client.send_trigger_left(val)
+	elif action == Action.TRIGGER_RIGHT:
+		client.send_trigger_right(val)
+
 
 func _send_dpad_aware(p_pressed: bool) -> void:
 	var client := _get_client()
@@ -213,17 +347,13 @@ func _send_dpad_aware(p_pressed: bool) -> void:
 		_:
 			_send(p_pressed)
 
-## Value to send when `self` releases one end of a d-pad axis: whichever end
-## is still held keeps its direction, otherwise neutral (0). Sending 0 only
-## when *nothing* is held stops a release from leaving the hat stuck on the
-## direction the dying press overwrote.
-func _surviving_direction(group: String, neg_action: Action, pos_action: Action) -> int:
+
+func _surviving_direction(group: String, neg_action: Action, _pos_action: Action) -> int:
 	for node in get_tree().get_nodes_in_group(group):
-		# Only siblings of the same kind can express a direction; a stray node
-		# in the group (or one mid-teardown) must not be read as a button.
 		if node is GamepadButton and node != self and node._is_active:
 			return -1 if node.action == neg_action else 1
 	return 0
+
 
 func _send(p_pressed: bool) -> void:
 	var client := _get_client()
@@ -232,22 +362,14 @@ func _send(p_pressed: bool) -> void:
 	match action:
 		Action.FACE_A:        client.send_button(0x130, p_pressed)
 		Action.FACE_B:        client.send_button(0x131, p_pressed)
-		# X and Y are deliberately crossed over relative to the uapi aliases.
-		# The kernel says `BTN_X = BTN_NORTH = 0x133`, but the code that the
-		# host actually sees is consumed through the Gamepad API, which lays
-		# the face buttons out the other way round: sending 0x133 for the
-		# button labelled Y is what makes a gamepad tester report Y. Do not
-		# "fix" these two back to match the uapi - that reintroduces the swap
-		# users see on the PC.
 		Action.FACE_X:        client.send_button(0x134, p_pressed)
 		Action.FACE_Y:        client.send_button(0x133, p_pressed)
-		
 		Action.BUMPER_LEFT:   client.send_button(0x136, p_pressed)
 		Action.BUMPER_RIGHT:  client.send_button(0x137, p_pressed)
-		
-		Action.TRIGGER_LEFT:  client.send_trigger_left(1.0 if p_pressed else 0.0)
-		Action.TRIGGER_RIGHT: client.send_trigger_right(1.0 if p_pressed else 0.0)
-		
+		Action.TRIGGER_LEFT:  _send_trigger(trigger_value if p_pressed else 0.0)
+		Action.TRIGGER_RIGHT: _send_trigger(trigger_value if p_pressed else 0.0)
 		Action.BACK:          client.send_button(0x13A, p_pressed)
 		Action.START:         client.send_button(0x13B, p_pressed)
 		Action.XBOX:          client.send_button(0x13C, p_pressed)
+		Action.THUMB_LEFT:    client.send_thumb_left(p_pressed)
+		Action.THUMB_RIGHT:   client.send_thumb_right(p_pressed)
